@@ -182,7 +182,7 @@ fi
 MANIFEST_HASH="$("$PREFIX/venv/bin/python" - "$MANIFEST" <<'PY'
 from mcp_remote_sudo.authority import Authority
 import sys
-print(Authority.from_path(sys.argv[1]).manifest_hash)
+print(Authority.load(sys.argv[1]).manifest_hash)
 PY
 )"
 
