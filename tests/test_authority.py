@@ -17,3 +17,8 @@ def test_binding_mismatch_denied():
 def test_unknown_manifest_field_fails_closed():
     m=manifest(); m["surprise"]=True
     with pytest.raises(ManifestError): Authority(m)
+
+
+def test_unknown_rule_field_fails_closed():
+    m=manifest(); m["allow"][1]["arguments"]=m["allow"][1].pop("args")
+    with pytest.raises(ManifestError): Authority(m)
