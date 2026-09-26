@@ -184,7 +184,8 @@ if ! getent group systemd-journal >/dev/null; then
 fi
 
 systemctl daemon-reload
-systemctl enable --now "$SERVICE.service"
+systemctl enable "$SERVICE.service"
+systemctl restart "$SERVICE.service"
 
 # Require the service to remain healthy through a short stabilization window.
 # A one-shot is-active check can race a crash/restart loop and report a false ready.
