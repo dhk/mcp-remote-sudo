@@ -15,6 +15,9 @@ grep -q 'RUNTIME_PRIVILEGED_MUTATION: disabled' <<<"$out"
 grep -q '^    args:$' "$INSTALL"
 ! grep -q '^    arguments:$' "$INSTALL"
 
+# Installed lifecycle scripts must support direct execution.
+grep -Fq 'chmod 0755 "$PREFIX/src/install/bootstrap.sh" "$PREFIX/src/install/install.sh" "$PREFIX/src/install/uninstall.sh"' "$INSTALL"
+
 # Source-level safety assertions for the bootstrap script.
 ! grep -Eq '0\.0\.0\.0|NOPASSWD: *ALL|chmod +777|shell=True' "$INSTALL"
 grep -q 'NoNewPrivileges=true' "$INSTALL"
