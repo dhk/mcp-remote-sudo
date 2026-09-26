@@ -43,6 +43,16 @@ PY
   else
     say "preflight: compatible"
   fi
+  [[ "$PORT" =~ ^[0-9]+$ ]] && (( PORT >= 1 && PORT <= 65535 )) || { say "preflight: incompatible"; say "invalid_port: $PORT"; return 2; }
+  if have ss && ss -ltnH "sport = :$PORT" 2>/dev/null | grep -q .; then
+    # A healthy existing installation may legitimately own its configured port
+    # during an idempotent reinstall. Any other listener is a collision.
+    if ! systemctl is-active --quiet "$SERVICE.service" 2>/dev/null; then
+      say "preflight: incompatible"
+      say "port_in_use: 127.0.0.1:$PORT"
+      return 4
+    fi
+  fi
   say "hostname: $(hostname)"
   say "python: $(python3 --version 2>&1)"
   say "port: $PORT"
@@ -68,7 +78,12 @@ if [[ "$MODE" == "--preflight" ]]; then preflight; exit $?; fi
 if [[ "$MODE" == "--plan" ]]; then preflight || true; plan; exit 0; fi
 [[ "$MODE" == "install" ]] || fail "unknown_mode"
 
-preflight || fail "preflight_failed"
+if ! preflight; then
+  rc=$?
+  # Preserve a specific machine-readable reason for a listener collision.
+  if have ss && ss -ltnH "sport = :$PORT" 2>/dev/null | grep -q .; then fail "port_in_use"; fi
+  fail "preflight_failed"
+fi
 plan
 
 if [[ "${EUID}" -ne 0 ]]; then
@@ -145,7 +160,7 @@ Type=simple
 User=$SERVICE_USER
 Group=$SERVICE_USER
 SupplementaryGroups=systemd-journal
-ExecStart=$PREFIX/venv/bin/mcp-remote-sudo --manifest $MANIFEST --agent mcp-remote-sudo --session baseline --host $HOST --receipts $RECEIPTS
+ExecStart=$PREFIX/venv/bin/mcp-remote-sudo --manifest $MANIFEST --agent mcp-remote-sudo --session baseline --host $HOST --receipts $RECEIPTS --port $PORT
 Restart=on-failure
 NoNewPrivileges=true
 ProtectSystem=strict
