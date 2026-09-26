@@ -59,6 +59,13 @@ class Authority:
             for rule in self.manifest.get(collection, []):
                 if not isinstance(rule, dict) or not isinstance(rule.get("tool"), str):
                     raise ManifestError(f"{collection} rules require a tool name")
+                unknown_rule_fields = set(rule) - {"tool", "args"}
+                if unknown_rule_fields:
+                    raise ManifestError(
+                        f"{collection} rule for {rule['tool']} has unknown fields: {sorted(unknown_rule_fields)}"
+                    )
+                if "args" in rule and not isinstance(rule["args"], dict):
+                    raise ManifestError(f"{collection} rule args must be a mapping")
 
     @staticmethod
     def _parse_time(value: str) -> datetime:
