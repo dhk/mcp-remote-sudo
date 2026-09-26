@@ -24,6 +24,11 @@ grep -q 'ProtectSystem=strict' "$INSTALL"
 # install to resolve the incompatible 2.x SDK.
 grep -Eq '"mcp>=1\.0,<2"' "$ROOT/pyproject.toml"
 
+# Reinstall must activate newly installed code/config rather than leave a stale process.
+grep -Fq 'systemctl enable "$SERVICE.service"' "$INSTALL"
+grep -Fq 'systemctl restart "$SERVICE.service"' "$INSTALL"
+! grep -Fq 'systemctl enable --now "$SERVICE.service"' "$INSTALL"
+
 # Ready must require sustained health and reject a restart during verification.
 grep -q 'NRestarts' "$INSTALL"
 grep -q 'service_restarted_during_verification' "$INSTALL"
