@@ -1,6 +1,64 @@
-# Zero-shot installation and bootstrap contract
+# Installation guide
 
-Status: proposed  
+The README gives the shortest path. This page explains the installation choices, their trust trade-offs, and the underlying bootstrap contract.
+
+## Choose an installation path
+
+### 1. One-shot bootstrap — default
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dhk/mcp-remote-sudo/main/install/bootstrap.sh | sudo bash
+```
+
+This is the easiest way to get started. The small bootstrap script clones the repository and hands control to the canonical installer; it does not contain a second copy of the installation logic.
+
+**Trade-off:** this executes the current `main` bootstrap as root. It is convenient, but you are trusting the repository state returned at execution time. Use one of the following paths if that trust model is too broad.
+
+You can select a particular ref:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dhk/mcp-remote-sudo/main/install/bootstrap.sh -o /tmp/mcp-remote-sudo-bootstrap.sh
+sudo env MCP_REMOTE_SUDO_REF=<tag-or-commit> bash /tmp/mcp-remote-sudo-bootstrap.sh
+```
+
+### 2. Download, inspect, then run — conservative
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dhk/mcp-remote-sudo/main/install/bootstrap.sh -o mcp-remote-sudo-bootstrap.sh
+less mcp-remote-sudo-bootstrap.sh
+sudo bash mcp-remote-sudo-bootstrap.sh
+```
+
+This removes the blind-pipe step. You can see the bootstrap before granting it root authority, but `main` is still mutable unless you also pin the source.
+
+### 3. Clone and pin — reproducible and auditable
+
+```bash
+git clone https://github.com/dhk/mcp-remote-sudo.git
+cd mcp-remote-sudo
+git checkout <release-tag-or-commit>
+git rev-parse HEAD
+bash install/install.sh --preflight
+bash install/install.sh --plan
+sudo bash install/install.sh
+```
+
+This is the preferred path when you need to know exactly which source revision received bootstrap authority. It also exposes preflight and the complete bootstrap plan before root execution.
+
+For a security-sensitive deployment, this is the strongest currently supported installation path.
+
+### 4. Packaged install — planned
+
+A published package should eventually remove the Git clone/bootstrap mechanics. For this Python project, `pipx` is the likely user-facing package mechanism because it isolates the application environment.
+
+This path is **not available yet**. Do not use an unrelated package with the same name from a package index.
+
+Packaging does not remove the need for privileged host bootstrap: creating the service account, protected directories, and systemd unit still requires explicit host authorization.
+
+## What the installer changes
+
+Regardless of entry path, installation converges on the same canonical installer and security model described below.
+
 Tracking: #6
 
 ## Objective

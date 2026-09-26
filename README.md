@@ -4,6 +4,26 @@ Give an MCP client narrowly controlled authority to inspect and operate a remote
 
 `mcp-remote-sudo` is an enforcement-first MCP utility for task-scoped remote operations. A reviewed manifest defines what a particular agent/session may do, to which resources, with which arguments, and for how long. The server exposes only those typed operations and records a receipt for every attempted action.
 
+## Install
+
+On a supported Linux host, the default installation is one command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dhk/mcp-remote-sudo/main/install/bootstrap.sh | sudo bash
+```
+
+The bootstrap downloads `mcp-remote-sudo`, hands off to the canonical installer, creates a dedicated service account, installs the read-only baseline authority, and binds the MCP service to `127.0.0.1:8765`. It does **not** leave the runtime service with general sudo or a privileged shell.
+
+That command deliberately optimizes for getting started. If you prefer to inspect the installer before running it, pin a commit/release, or verify exactly what will change before elevation, see the [installation guide](docs/installation/zero-shot.md).
+
+After installation, connect remotely through an SSH tunnel:
+
+```bash
+ssh -N -L 8765:127.0.0.1:8765 <user>@<host>
+```
+
+Your MCP endpoint is then `http://127.0.0.1:8765/mcp`.
+
 ## Why
 
 SSH answers: **who may open a remote shell?**
