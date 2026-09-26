@@ -142,7 +142,7 @@ allow:
   - tool: wifi.scan
   - tool: systemd.status
   - tool: journal.query
-    arguments:
+    args:
       lines:
         minimum: 1
         maximum: 500
