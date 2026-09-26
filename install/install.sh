@@ -44,10 +44,14 @@ PY
     say "preflight: compatible"
   fi
   [[ "$PORT" =~ ^[0-9]+$ ]] && (( PORT >= 1 && PORT <= 65535 )) || { say "preflight: incompatible"; say "invalid_port: $PORT"; return 2; }
-  if have ss && ss -ltnH "sport = :$PORT" 2>/dev/null | awk '{print $4}' | grep -Eq "(^|\\[)127\\.0\\.0\\.1(\\]|):$PORT$"; then
-    say "preflight: incompatible"
-    say "port_in_use: 127.0.0.1:$PORT"
-    return 4
+  if have ss && ss -ltnH "sport = :$PORT" 2>/dev/null | grep -q .; then
+    # A healthy existing installation may legitimately own its configured port
+    # during an idempotent reinstall. Any other listener is a collision.
+    if ! systemctl is-active --quiet "$SERVICE.service" 2>/dev/null; then
+      say "preflight: incompatible"
+      say "port_in_use: 127.0.0.1:$PORT"
+      return 4
+    fi
   fi
   say "hostname: $(hostname)"
   say "python: $(python3 --version 2>&1)"
