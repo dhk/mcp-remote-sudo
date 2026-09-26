@@ -21,8 +21,8 @@ class Runtime:
             self.receipts.write({**base,"result":"failed","error":type(exc).__name__}); raise
         self.receipts.write({**base,"result":"success"}); return result
 
-def build_server(runtime:Runtime)->FastMCP:
-    mcp=FastMCP("mcp-remote-sudo",host="127.0.0.1",port=8765); allowed=runtime.authority.allowed_tools
+def build_server(runtime:Runtime, *, port:int=8765)->FastMCP:
+    mcp=FastMCP("mcp-remote-sudo",host="127.0.0.1",port=port); allowed=runtime.authority.allowed_tools
     if "system.info" in allowed:
         @mcp.tool(name="system_info")
         def system_info()->dict: return runtime.invoke("system.info",{},adapters.system_info)
@@ -44,7 +44,8 @@ def build_server(runtime:Runtime)->FastMCP:
     return mcp
 
 def main()->None:
-    p=argparse.ArgumentParser(); p.add_argument("--manifest",required=True); p.add_argument("--agent",required=True); p.add_argument("--session",required=True); p.add_argument("--host",default=socket.gethostname()); p.add_argument("--receipts",default=os.environ.get("MCP_REMOTE_SUDO_RECEIPTS","./receipts.jsonl")); a=p.parse_args()
+    p=argparse.ArgumentParser(); p.add_argument("--manifest",required=True); p.add_argument("--agent",required=True); p.add_argument("--session",required=True); p.add_argument("--host",default=socket.gethostname()); p.add_argument("--receipts",default=os.environ.get("MCP_REMOTE_SUDO_RECEIPTS","./receipts.jsonl")); p.add_argument("--port",type=int,default=8765); a=p.parse_args()
     authority=Authority.load(a.manifest); runtime=Runtime(authority,ReceiptWriter(a.receipts),agent=a.agent,session=a.session,host=a.host)
-    build_server(runtime).run(transport="streamable-http")
+    if not 1 <= a.port <= 65535: p.error("--port must be between 1 and 65535")
+    build_server(runtime,port=a.port).run(transport="streamable-http")
 if __name__=="__main__": main()
