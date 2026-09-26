@@ -4,7 +4,18 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INSTALL="$ROOT/install/install.sh"
 
 bash -n "$INSTALL"
-bash -n "$ROOT/install/uninstall.sh"
+UNINSTALL="$ROOT/install/uninstall.sh"
+bash -n "$UNINSTALL"
+
+# Normal uninstall preserves audit/config state and its owning service identity;
+# destructive account/log/config removal belongs only to --purge.
+grep -q 'if \$PURGE; then' "$UNINSTALL"
+purge_block="$(sed -n '/if \$PURGE; then/,/^else$/p' "$UNINSTALL")"
+grep -q 'rm -rf /etc/mcp-remote-sudo /var/log/mcp-remote-sudo' <<<"$purge_block"
+grep -q 'userdel mcp-remote-sudo' <<<"$purge_block"
+normal_block="$(sed -n '/^else$/,/^fi$/p' "$UNINSTALL")"
+! grep -q 'userdel mcp-remote-sudo' <<<"$normal_block"
+grep -q 'preserved: /etc/mcp-remote-sudo /var/log/mcp-remote-sudo and service user' "$UNINSTALL"
 
 out="$(bash "$INSTALL" --plan || true)"
 grep -q '^BOOTSTRAP_PLAN$' <<<"$out"
