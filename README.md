@@ -1,64 +1,105 @@
-# repo-template
+# mcp-remote-sudo
 
-A starting point for new personal repos, distilled from patterns already
-working across dhk's other repos (`work-ledger`, `familiar-places`, `fossil`,
-`crucible`, `skill-map`). Three goals drove the shape:
+Give an MCP client narrowly controlled authority to inspect and operate a remote Linux machine **without giving the agent an unrestricted remote shell**.
 
-- **Instructive** — a stranger, human or Claude, can orient fast.
-- **Build in public** — the repo's own files carry the argument; nothing
-  depends on private context to make sense.
-- **Workflow-visible** — session continuity is a file, not a lost thread.
+`mcp-remote-sudo` is an enforcement-first MCP utility for task-scoped remote operations. A reviewed manifest defines what a particular agent/session may do, to which resources, with which arguments, and for how long. The server exposes only those typed operations and records a receipt for every attempted action.
 
-## Use it
+## Why
 
-```bash
-cp -r template/ ~/Documents/dev/<new-repo-name>
-cd ~/Documents/dev/<new-repo-name>
-# fill in the <placeholders> in README.md, CLAUDE.md, HANDOFF.md
-git init && git add -A && git commit -m "Initial scaffold from repo-template"
+SSH answers: **who may open a remote shell?**
+
+`sudo` answers: **which privileged commands may this identity run?**
+
+`mcp-remote-sudo` asks a narrower agentic question:
+
+> **What authority does this agent need for this bounded task, and no more?**
+
+The goal is not a new IAM system. It is a small orchestration layer over mature controls such as dedicated service accounts, sudoers, polkit, systemd, short-lived credentials, and OS sandboxing.
+
+## Model
+
+```text
+Human review
+    │
+    ▼
+Task authority manifest
+    │
+    ├── agent/session binding
+    ├── host/resource scope
+    ├── typed tool allowlist
+    ├── argument constraints
+    ├── explicit lifetime
+    └── deny rules
+    │
+    ▼
+mcp-remote-sudo
+    │
+    ├── validates every invocation
+    ├── invokes narrow host adapters
+    └── writes action receipts
+    │
+    ▼
+Existing OS / IAM enforcement
 ```
 
-Then work through [`SETUP.md`](template/SETUP.md) — the repo *settings* a file
-copy cannot carry.
+The manifest is **static by default**. Authority may expire, be revoked, or be narrowed. It does not expand implicitly because an agent discovers that it would like another permission.
 
-## What's in it, and why
+## Initial use case
 
-| File | Answers | Pattern it's drawn from |
-|---|---|---|
-| `README.md` | What is this, why does it exist, what's actually done vs. planned | familiar-places (names its competitor), work-ledger (status honesty, links design issues instead of restating them), crucible ("check me out") |
-| `CLAUDE.md` | Stack, architecture, conventions, **workflow rules** | Every repo's CLAUDE.md; workflow rules specifically from fossil |
-| `HANDOFF.md` | Where did I leave off, what's next, known gotchas | familiar-places/handoff.md |
-| `docs/snapshots/` | Frozen record of a design session or pivot, dated | fossil/context-snapshot.md, reading-with-ears' dated snapshots (relocated out of repo root — see below) |
-| `SETUP.md` | The repo settings that a file copy cannot carry — branch protection, Actions permissions, Pages, secrets, and the local `gh` scope | Learned by hitting each one; see the file's closing note |
-| `docs/design/` | Why a decision was made, not just what it is | praxis's four-question CONTRIBUTING.md frame, crucible/docs/concepts |
-| `.scratch/` (gitignored) | Ephemeral working files — never committed | adventures-in-ai, work-ledger, crucible, reading-with-ears all already do this |
-| `LICENSE` | Building in public means someone else can actually use this | Present in nearly every repo already |
+The first wedge is remote Linux diagnostics and controlled remediation.
 
-## What's deliberately left out by default
+A Wi-Fi debugging task, for example, might allow system/network status, Wi-Fi scanning, selected systemd status, bounded journal queries, loading/unloading explicitly named kernel modules, toggling Wi-Fi, and activating explicitly allowlisted pre-existing NetworkManager connections.
 
-`CONTRIBUTING.md` and `.github/ISSUE_TEMPLATE/` aren't in the base template —
-most of these repos are solo build-in-public, not soliciting outside PRs. Add
-them per-repo (skill-map's `CONTRIBUTING.md` is a good model) once a project
-actually wants contributors.
+It should not imply arbitrary shell execution, package installation, unrestricted filesystem writes, system reboot, or general `sudo`/root.
 
-CI workflows (`.github/workflows/`) are project-specific by nature — copy the
-relevant one from `praxis`, `crucible`, `skill-map`, `tricorder`, or (for an
-Astro/Node static site — build + non-blocking `astro check`, since a
-type-check step usually needs to start informational until a codebase earns
-a hard gate) `DHK-website`, rather than templating a generic one that won't
-fit.
+## Example
 
-## HANDOFF.md vs. docs/snapshots/ — the split that matters
+```yaml
+apiVersion: mcp-remote-sudo/v1
+kind: TaskAuthority
+metadata:
+  id: wifi-debug-001
+  purpose: Diagnose Wi-Fi driver behavior
+binding:
+  agent: agent:network-debugger
+  session: sess_01
+  host: lab-host-01
+lifetime:
+  ttl: 30m
+  renewable: false
+  expansion: prohibited
+allow:
+  - tool: network.status
+  - tool: wifi.scan
+  - tool: systemd.status
+    args:
+      unit:
+        enum: [NetworkManager.service]
+  - tool: kernel.module.set
+    args:
+      name:
+        enum: [b43, wl]
+      state:
+        enum: [loaded, unloaded]
+deny:
+  - tool: shell.exec
+  - tool: package.install
+  - tool: system.reboot
+  - tool: filesystem.write
+receipts:
+  required: true
+```
 
-`HANDOFF.md` is **one file, always current, overwritten each session** — the
-first thing a fresh session (you or Claude) should read: where things stand,
-what's next, what to watch out for.
+## Receipts
 
-`docs/snapshots/YYYY-MM-DD-<topic>.md` is the opposite: **write-once,
-permanent** — the output of a design sprint or the reasoning behind a pivot,
-worth keeping forever.
+Every attempted operation should leave enough evidence to identify the agent/session, manifest and version, typed operation, normalized arguments, authorization decision, enforcement path, result, and affected resources. Denials and failures are evidence too.
 
-Don't let one collapse into the other. reading-with-ears' dated snapshot
-files committed loose at the repo root are the cautionary example — right
-instinct (capture the session), wrong location (repo root, not `docs/`;
-accumulating, not superseding a living handoff doc).
+## Security stance
+
+Authorization, tool exposure, sandboxing, credential delegation, and audit are separate controls. `mcp-remote-sudo` coordinates them; it does not pretend one replaces the others.
+
+The agent should never receive a raw privileged shell in the initial design. Privilege remains behind narrow, typed adapters whose real OS authority is no broader than the manifest they enforce.
+
+## Status
+
+Early design/prototype. See [Issue #1](https://github.com/dhk/mcp-remote-sudo/issues/1) for the first implementation slice.
