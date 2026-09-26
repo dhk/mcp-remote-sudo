@@ -170,8 +170,14 @@ fi
 
 systemctl daemon-reload
 systemctl enable --now "$SERVICE.service"
-sleep 1
-systemctl is-active --quiet "$SERVICE.service" || fail "service_not_active"
+
+# Require the service to remain healthy through a short stabilization window.
+# A one-shot is-active check can race a crash/restart loop and report a false ready.
+for _ in 1 2 3 4 5; do
+  sleep 1
+  systemctl is-active --quiet "$SERVICE.service" || fail "service_not_active"
+  [[ "$(systemctl show -p NRestarts --value "$SERVICE.service")" == "0" ]] || fail "service_restarted_during_verification"
+done
 
 LISTEN_OK=unknown
 if have ss; then

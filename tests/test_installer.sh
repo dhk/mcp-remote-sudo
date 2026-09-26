@@ -16,4 +16,12 @@ grep -q 'RUNTIME_PRIVILEGED_MUTATION: disabled' <<<"$out"
 grep -q 'NoNewPrivileges=true' "$INSTALL"
 grep -q 'ProtectSystem=strict' "$INSTALL"
 
+# The server currently uses the MCP SDK 1.x FastMCP API; do not allow a fresh
+# install to resolve the incompatible 2.x SDK.
+grep -Eq '"mcp>=1\.0,<2"' "$ROOT/pyproject.toml"
+
+# Ready must require sustained health and reject a restart during verification.
+grep -q 'NRestarts' "$INSTALL"
+grep -q 'service_restarted_during_verification' "$INSTALL"
+
 echo "installer contract tests passed"

@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Task-scoped remote Linux authority for MCP clients"
 requires-python = ">=3.11"
 dependencies = [
-  "mcp>=1.0",
+  "mcp>=1.0,<2",
   "PyYAML>=6.0",
 ]
 
