@@ -110,6 +110,10 @@ mkdir -p "$PREFIX/src.new"
 cp -a "$SOURCE_ROOT/." "$PREFIX/src.new/"
 rm -rf "$PREFIX/src"
 mv "$PREFIX/src.new" "$PREFIX/src"
+# The installed source tree is also the lifecycle administration surface.
+# Ensure its entry-point scripts support direct execution regardless of
+# repository/archive mode preservation.
+chmod 0755 "$PREFIX/src/install/bootstrap.sh" "$PREFIX/src/install/install.sh" "$PREFIX/src/install/uninstall.sh"
 
 python3 -m venv "$PREFIX/venv"
 "$PREFIX/venv/bin/pip" install --disable-pip-version-check "$PREFIX/src"
