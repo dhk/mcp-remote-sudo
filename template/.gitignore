@@ -1,0 +1,13 @@
+# Ephemeral working files — never committed
+.scratch/*
+!.scratch/.gitkeep
+
+# OS noise
+.DS_Store
+
+# Common local-secrets pattern
+.env
+.env.local
+
+# Claude Code — local worktrees / machine-specific
+.claude/
