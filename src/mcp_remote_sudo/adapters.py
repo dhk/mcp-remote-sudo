@@ -1,9 +1,10 @@
 from __future__ import annotations
 import re, subprocess
+from pathlib import Path
 from typing import Sequence
 
 UNIT=re.compile(r"^[A-Za-z0-9_.@:-]+$")
-MODULE=re.compile(r"^[A-Za-z0-9_-]+$")
+MODULE=re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 TARGET=re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,252}$")
 WIFI_LOG_TERMS=("wl","wlp","wlan","wifi","wi-fi","broadcom","cfg80211","80211","networkmanager")
 
@@ -20,8 +21,8 @@ def wifi_driver_status(module:str)->dict:
     if not MODULE.fullmatch(module): raise ValueError("invalid kernel module")
     return {
         "kernel":run(["uname","-r"]),
-        "modules":run(["lsmod"]),
-        "modinfo":run(["modinfo",module]),
+        "loaded":(Path("/sys/module") / module).is_dir(),
+        "modinfo":run(["modinfo","--",module]),
     }
 
 def connectivity_probe(target:str,count:int=4)->dict:
