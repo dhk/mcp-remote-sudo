@@ -22,3 +22,19 @@ def test_unknown_manifest_field_fails_closed():
 def test_unknown_rule_field_fails_closed():
     m=manifest(); m["allow"][1]["arguments"]=m["allow"][1].pop("args")
     with pytest.raises(ManifestError): Authority(m)
+
+
+def test_wifi_pack_constraints_are_manifest_enforced():
+    m=manifest()
+    m["allow"].extend([
+        {"tool":"wifi.driver.status","args":{"module":{"enum":["wl"]}}},
+        {"tool":"kernel.wifi.log","args":{"lines":{"minimum":1,"maximum":200}}},
+        {"tool":"network.probe","args":{"target":{"enum":["192.168.7.1","1.1.1.1"]},"count":{"minimum":1,"maximum":4}}},
+    ])
+    a=Authority(m)
+    assert a.evaluate("wifi.driver.status",{"module":"wl"}).allowed
+    assert not a.evaluate("wifi.driver.status",{"module":"b43"}).allowed
+    assert a.evaluate("kernel.wifi.log",{"lines":100}).allowed
+    assert not a.evaluate("kernel.wifi.log",{"lines":500}).allowed
+    assert a.evaluate("network.probe",{"target":"1.1.1.1","count":4}).allowed
+    assert not a.evaluate("network.probe",{"target":"8.8.8.8","count":4}).allowed
