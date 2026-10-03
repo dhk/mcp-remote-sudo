@@ -5,10 +5,13 @@ from mcp_remote_sudo import adapters
 def test_wifi_driver_status_validates_module(monkeypatch):
     calls=[]
     monkeypatch.setattr(adapters,"run",lambda argv,timeout=15: calls.append((list(argv),timeout)) or {"argv":list(argv),"returncode":0,"stdout":"","stderr":""})
-    adapters.wifi_driver_status("wl")
-    assert [c[0] for c in calls] == [["uname","-r"],["lsmod"],["modinfo","wl"]]
-    with pytest.raises(ValueError):
-        adapters.wifi_driver_status("wl;reboot")
+    monkeypatch.setattr(adapters.Path,"is_dir",lambda self: True)
+    result=adapters.wifi_driver_status("wl")
+    assert result["loaded"] is True
+    assert [c[0] for c in calls] == [["uname","-r"],["modinfo","--","wl"]]
+    for bad in ("wl;reboot","--help","-wl"):
+        with pytest.raises(ValueError):
+            adapters.wifi_driver_status(bad)
 
 
 def test_connectivity_probe_is_bounded_and_argv_only(monkeypatch):
