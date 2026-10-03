@@ -54,6 +54,7 @@ The read-only MCP path worked. Every decisive step still needed SSH or root scri
 |---|---|---|
 | Previous-boot logs and a time window | not possible through MCP; used SSH | journal boot and time bounds → #33 |
 | Kernel driver evidence | all 200 lines were `[UFW BLOCK] IN=wlp2s0`, because `wlp` matched | noise filtering → #34 |
+| Unknown manifest keys | nested unknown keys are silently accepted (found in review) | fail closed → #48 |
 | Driver version | `modinfo` failed under `ProtectKernelModules=true` | read sysfs instead → #35 |
 | "Did an explicit scan reproduce it?" | the scan may have come from cache | explicit rescan → #35 |
 | Gateway and Internet probes | `ping` file capabilities blocked by `NoNewPrivileges` | scoped ICMP support → #36 |
@@ -108,11 +109,23 @@ Packs also ship authority templates: `read-only`, and `remediate` where relevant
 authority decides what is actually exposed. If the authority allows an operation that no installed pack provides, the
 server fails at startup.
 
+**Shipping a pack.** Packs are ordinary Python distributions:
+
+- **Built-in packs** ship inside mcp-remote-sudo and update with it (#16).
+- **External packs** are installed by the operator, never by the agent, with
+  `mcp-remote-sudo-admin pack install <name>==<version> --sha256 <digest>` or a local wheel path (#38). This installs
+  into the service's own virtualenv only, never system-wide, and reloads the service.
+- `pack list` shows the installed packs and which of their operations the active authority currently exposes.
+- `pack remove` uninstalls a pack. It refuses while the active authority still references any of its operations.
+
+Installing a pack grants nothing. Authority still comes only from a `grant`.
+
 ### Operator administration (#37–#39)
 
 `mcp-remote-sudo-admin` turns the hand-written script from the lobster session into a product:
 
 - `validate` and `diff` check a manifest without changing anything.
+- `pack list`, `pack install` and `pack remove` manage installed packs (see above).
 - `grant` validates the manifest, checks the binding, backs up the current authority, replaces it atomically, sends
   SIGHUP and checks health.
 - `revoke` installs an expired deny-all authority.
@@ -150,7 +163,7 @@ or merge conflicts.
 |---|---|---|---|
 | Docs | #30, #31 | `docs/design/*`, `docs/research/*` | parallel with everything |
 | Installer | #36, then helper installation as part of #41 | `install/*`, `tests/test_installer.sh`, `docs/installation/*` | parallel with the runtime lane until #41 |
-| Runtime | #32 → #33 → #34 → #35 → #37 → #38 → #39 → #40 → #41 → #42 → #43 | `src/*`, `tests/*`, `pyproject.toml` | strictly one after another |
+| Runtime | #48 → #32 → #33 → #34 → #35 → #37 → #38 → #39 → #40 → #41 → #42 → #43 | `src/*`, `tests/*`, `pyproject.toml` | strictly one after another |
 
 Other rules:
 
