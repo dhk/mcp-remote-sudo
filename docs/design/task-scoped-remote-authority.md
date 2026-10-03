@@ -2,8 +2,9 @@
 
 Status: proposed  
 Issue: #3  
-Research basis: `docs/research/task-scoped-authority-research-{brief,report}.md`  
-Note: restored to `main` in #31 (originally merged via #4 into a stacked branch). The read-only slice (§6) is implemented; follow-on work is planned in [`roadmap.md`](roadmap.md).
+Research basis: `docs/research/task-scoped-authority-research-{brief,report}.md`
+
+> **Status note (restored in #31):** originally merged via #4 into a stacked branch and never reached `main`. The initial read-only adapters, manifest evaluator and receipt chain from §6 are implemented; remaining §6 acceptance items (fail-closed nested manifest fields — #48; receipt-chain verification — #37) and all follow-on work are tracked in the operator-loop roadmap (#30, epic #45).
 
 ## 1. Purpose
 
