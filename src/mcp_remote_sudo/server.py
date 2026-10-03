@@ -35,6 +35,15 @@ def build_server(runtime:Runtime, *, port:int=8765)->FastMCP:
     if "wifi.scan" in allowed:
         @mcp.tool(name="wifi_scan")
         def wifi_scan()->dict: return runtime.invoke("wifi.scan",{},adapters.wifi_scan)
+    if "wifi.driver.status" in allowed:
+        @mcp.tool(name="wifi_driver_status")
+        def wifi_driver_status(module:str)->dict: return runtime.invoke("wifi.driver.status",{"module":module},adapters.wifi_driver_status)
+    if "network.probe" in allowed:
+        @mcp.tool(name="connectivity_probe")
+        def connectivity_probe(target:str,count:int=4)->dict: return runtime.invoke("network.probe",{"target":target,"count":count},adapters.connectivity_probe)
+    if "kernel.wifi.log" in allowed:
+        @mcp.tool(name="kernel_wifi_log")
+        def kernel_wifi_log(lines:int=100)->dict: return runtime.invoke("kernel.wifi.log",{"lines":lines},adapters.kernel_wifi_log)
     if "systemd.status" in allowed:
         @mcp.tool(name="systemd_status")
         def systemd_status(unit:str)->dict: return runtime.invoke("systemd.status",{"unit":unit},adapters.systemd_status)

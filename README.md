@@ -110,6 +110,38 @@ receipts:
   required: true
 ```
 
+### Wi-Fi diagnostic task pack
+
+For a bounded Wi-Fi investigation, a TaskAuthority can combine the existing read-only tools with three additional typed diagnostics:
+
+- `wifi.driver.status` — reports the running kernel, the requested module's loaded state, and `modinfo` for an explicitly allowlisted module such as `wl`.
+- `kernel.wifi.log` — returns at most 500 current-boot kernel journal lines, filtered to Wi-Fi/network-driver terms.
+- `network.probe` — runs a bounded ICMP probe to an explicitly allowlisted hostname or IP address, with 1–10 packets.
+
+For example:
+
+```yaml
+allow:
+  - tool: wifi.driver.status
+    args:
+      module:
+        enum: [wl, b43]
+  - tool: kernel.wifi.log
+    args:
+      lines:
+        minimum: 1
+        maximum: 200
+  - tool: network.probe
+    args:
+      target:
+        enum: [192.168.7.1, 1.1.1.1]
+      count:
+        minimum: 1
+        maximum: 4
+```
+
+These tools do not accept shell strings. The manifest remains the authority boundary: a client cannot probe an unlisted target or inspect an unlisted kernel module through these operations.
+
 ## Receipts
 
 Every attempted operation should leave enough evidence to identify the agent/session, manifest and version, typed operation, normalized arguments, authorization decision, enforcement path, result, and affected resources. Denials and failures are evidence too.
