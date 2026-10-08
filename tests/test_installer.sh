@@ -38,6 +38,7 @@ grep -Fq 'chmod 0755 "$PREFIX/src/install/bootstrap.sh" "$PREFIX/src/install/ins
 # Source-level safety assertions for the bootstrap script.
 refute grep -Eq '0\.0\.0\.0|NOPASSWD: *ALL|chmod +777|shell=True' "$INSTALL"
 grep -q 'NoNewPrivileges=true' "$INSTALL"
+grep -qx 'RestartForceExitStatus=SIGHUP' "$INSTALL"
 grep -q 'ProtectSystem=strict' "$INSTALL"
 
 # The server currently uses the MCP SDK 1.x FastMCP API; do not allow a fresh
