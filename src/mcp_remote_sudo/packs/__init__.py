@@ -7,7 +7,7 @@ one) under the ``mcp_remote_sudo.packs`` entry-point group.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from importlib.metadata import entry_points
 from typing import Any, Callable, Iterable
 
@@ -62,6 +62,7 @@ class TaskPack:
     operations: tuple[Operation, ...]
     description: str = ""
     templates: dict[str, dict] = field(default_factory=dict)
+    distribution: str | None = None    # the installed distribution that provides the pack (set at discovery)
 
 
 class Registry:
@@ -81,6 +82,11 @@ class Registry:
                 self.operations[op.name] = op
                 tools[op.tool] = op.name
 
+    def describe(self) -> dict[str, dict]:
+        """Pack -> version, distribution and operation names (published in the service status file)."""
+        return {p.name: {"version": p.version, "distribution": p.distribution,
+                         "operations": sorted(o.name for o in p.operations)} for p in self.packs.values()}
+
     def pack_of(self, operation: str) -> str:
         return next(p.name for p in self.packs.values() if any(o.name == operation for o in p.operations))
 
@@ -95,7 +101,7 @@ class Registry:
 
 def builtin_packs() -> list[TaskPack]:
     from . import core, wifi
-    return [core.PACK, wifi.PACK]
+    return [replace(p, distribution="mcp-remote-sudo") for p in (core.PACK, wifi.PACK)]
 
 
 def discover_packs() -> list[TaskPack]:
@@ -110,7 +116,8 @@ def discover_packs() -> list[TaskPack]:
             # needs_runtime hands the adapter the whole Runtime: built-in operations only. This guards against API
             # misuse; it is not isolation (pack code runs in-process with the service's privileges).
             raise PackError(f"external pack {pack.name} may not declare needs_runtime operations: {runtime_ops}")
-        found.append(pack)
+        dist = getattr(ep, "dist", None)
+        found.append(replace(pack, distribution=dist.name if dist is not None else pack.distribution))
     return found
 
 

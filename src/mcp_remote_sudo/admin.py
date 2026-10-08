@@ -23,7 +23,7 @@ from typing import Any, Sequence
 
 import yaml
 
-from . import packs
+from . import pack_install, packs
 from .authority import Authority, ManifestError
 from .receipts import verify_chain
 
@@ -31,6 +31,7 @@ DEFAULT_MANIFEST = "/etc/mcp-remote-sudo/authority.yaml"
 DEFAULT_STATE_DIR = "/var/lib/mcp-remote-sudo"
 DEFAULT_RECEIPTS = "/var/log/mcp-remote-sudo/receipts.jsonl"
 DEFAULT_SERVICE = "mcp-remote-sudo.service"
+DEFAULT_PACKS_DIR = "/opt/mcp-remote-sudo/packs"
 
 
 class AdminError(RuntimeError):
@@ -76,8 +77,9 @@ def diff_text(current: Authority | None, new: Authority) -> str:
 
 class Admin:
     def __init__(self, manifest: str, state_dir: str, receipts: str, service: str,
-                 registry: packs.Registry | None = None, out=sys.stdout):
+                 registry: packs.Registry | None = None, out=sys.stdout, packs_dir: str = DEFAULT_PACKS_DIR):
         self.manifest = Path(manifest); self.status_path = Path(state_dir) / "authority-status.json"
+        self.packs_dir = Path(packs_dir)
         self.receipts = Path(receipts); self.service = service; self.out = out; self.session_mode_override: str | None = None
         # Built-in packs only: importing external pack code as root is exactly what the pack design forbids.
         self.registry = registry or packs.Registry(packs.builtin_packs())
@@ -180,13 +182,66 @@ class Admin:
         return result["ok"]
 
     def pack_list(self) -> None:
-        """Built-in packs with exposure state. (External packs, #54, are listed from metadata without importing.)"""
+        """Built-in packs, external distributions (metadata only — never imported here), and what the service loaded."""
         a = self.current(); allowed = a.allowed_tools if a else set()
         for pack in self.registry.packs.values():
-            self.say(f"{pack.name} {pack.version} — {pack.description}")
+            self.say(f"{pack.name} {pack.version} (built-in) — {pack.description}")
             for op in pack.operations:
                 mark = "exposed" if op.name in allowed else "available"
                 self.say(f"  {op.name:<22} {op.tool:<22} {mark}{'  (mutating)' if op.mutating else ''}")
+        loaded = (self.read_status() or {}).get("packs", {})
+        for dist in pack_install.installed(self.packs_dir):
+            self.say(f"{dist['distribution']} {dist['version']} (external, entry points: {dist['entry_points'] or 'none'})")
+            for name, info in loaded.items():
+                if info.get("distribution") and pack_install.canonical(info["distribution"]) == dist["distribution"]:
+                    for op in info.get("operations", []):
+                        self.say(f"  {op:<22} {'exposed' if op in allowed else 'available'}")
+
+    def pack_install(self, lockfile: str, *, yes: bool = False, timeout: float = 20.0) -> list[str]:
+        if not yes and input(f"install packs pinned in {lockfile} into {self.packs_dir} and restart {self.service}? [y/N] ").strip().lower() not in ("y", "yes"):
+            raise AdminError("aborted by operator")
+        try:
+            done = pack_install.install(Path(lockfile), self.packs_dir, run)
+        except (pack_install.PackInstallError, OSError) as exc:
+            raise AdminError(str(exc)) from exc
+        self.say(f"installed: {', '.join(done)}")
+        self._restart_and_confirm(timeout)
+        self.pack_list()
+        return done
+
+    def pack_remove(self, dist: str, *, yes: bool = False, timeout: float = 20.0) -> None:
+        status = self.read_status()
+        if status is None or "packs" not in status:
+            raise AdminError("cannot confirm which operations the pack provides (service status unavailable); refusing")
+        a = self.current(); allowed = a.allowed_tools if a else set()
+        provided = {op for info in status["packs"].values()
+                    if info.get("distribution") and pack_install.canonical(info["distribution"]) == pack_install.canonical(dist)
+                    for op in info.get("operations", [])}
+        referenced = sorted(provided & allowed)
+        if referenced:
+            raise AdminError(f"the active authority still allows {referenced} from {dist}; revoke or re-grant first")
+        if not yes and input(f"remove {dist} from {self.packs_dir} and restart {self.service}? [y/N] ").strip().lower() not in ("y", "yes"):
+            raise AdminError("aborted by operator")
+        if not pack_install.remove_distribution_files(self.packs_dir, dist):
+            raise AdminError(f"{dist} is not installed in {self.packs_dir}")
+        self.say(f"removed: {pack_install.canonical(dist)}")
+        self._restart_and_confirm(timeout)
+
+    def _restart_and_confirm(self, timeout: float) -> None:
+        # A restart (not a reload) gives the service a clean import state after packs change on disk.
+        before = (self.read_status() or {}).get("at")
+        r = run(["systemctl", "restart", self.service])
+        if r.returncode != 0:
+            raise AdminError(f"could not restart {self.service}: {r.stderr.strip() or r.returncode}")
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            st = self.read_status()
+            if st and st.get("at") != before:
+                if st.get("ok"):
+                    self.say(f"{self.service} restarted; authority {st.get('manifest_hash')} loaded"); return
+                raise AdminError(f"{self.service} restarted but reports: {st.get('error')}")
+            time.sleep(0.2)
+        raise AdminError(f"{self.service} did not report healthy within {timeout:g}s (see journalctl -u {self.service})")
 
     # -- install + reload ---------------------------------------------------------------------
     def _install(self, new: Authority, *, yes: bool, timeout: float, action: str) -> Authority:
@@ -298,6 +353,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--service", default=DEFAULT_SERVICE)
     p.add_argument("--session-mode", choices=("manifest", "fixed"), default=None,
                    help="override the service's session mode when its status file is unavailable")
+    p.add_argument("--packs-dir", default=DEFAULT_PACKS_DIR)
     sub = p.add_subparsers(dest="command", required=True)
     sub.add_parser("validate", help="validate a manifest file").add_argument("file")
     sub.add_parser("diff", help="diff a manifest file against the active authority").add_argument("file")
@@ -310,8 +366,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     rc_sub.add_parser("verify", help="verify the receipt hash chain")
     pk = sub.add_parser("pack", help="Task Pack operations"); pk_sub = pk.add_subparsers(dest="pack_command", required=True)
     pk_sub.add_parser("list", help="installed packs and which operations the active authority exposes")
+    pi = pk_sub.add_parser("install", help="install wheel-only, hash-pinned packs from a lockfile, then restart")
+    pi.add_argument("--requirements", required=True); pi.add_argument("--yes", action="store_true"); pi.add_argument("--timeout", type=float, default=20.0)
+    pr = pk_sub.add_parser("remove", help="remove an external pack distribution (refused while referenced), then restart")
+    pr.add_argument("distribution"); pr.add_argument("--yes", action="store_true"); pr.add_argument("--timeout", type=float, default=20.0)
     a = p.parse_args(argv)
-    admin = Admin(a.manifest, a.state_dir, a.receipts, a.service)
+    admin = Admin(a.manifest, a.state_dir, a.receipts, a.service, packs_dir=a.packs_dir)
     admin.session_mode_override = a.session_mode
     try:
         if a.command == "validate": admin.validate(a.file)
@@ -320,7 +380,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif a.command == "revoke": admin.revoke(yes=a.yes, timeout=a.timeout)
         elif a.command == "status": admin.status()
         elif a.command == "receipts": return 0 if admin.receipts_verify() else 1
-        elif a.command == "pack": admin.pack_list()
+        elif a.command == "pack" and a.pack_command == "list": admin.pack_list()
+        elif a.command == "pack" and a.pack_command == "install": admin.pack_install(a.requirements, yes=a.yes, timeout=a.timeout)
+        elif a.command == "pack" and a.pack_command == "remove": admin.pack_remove(a.distribution, yes=a.yes, timeout=a.timeout)
     except AdminError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

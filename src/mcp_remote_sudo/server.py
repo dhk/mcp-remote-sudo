@@ -6,7 +6,7 @@ import signal as _signal, threading as _threading
 _EARLY_HUP:list[int]=[]
 if _threading.current_thread() is _threading.main_thread():   # signal handlers can only be set on the main thread
     _signal.signal(_signal.SIGHUP,lambda signum,frame:_EARLY_HUP.append(signum))
-import argparse, asyncio, functools, hashlib, inspect, json, logging, os, signal, socket
+import argparse, asyncio, functools, hashlib, inspect, json, logging, os, signal, socket, sys
 import yaml
 from datetime import datetime, timezone
 from pathlib import Path
@@ -82,6 +82,7 @@ class AuthorityReloader:
                 "attempted_file_sha256":attempted_file_sha256,
                 "not_after":a.manifest["lifetime"]["notAfter"],"tools":sorted(self.exposed),
                 "session":self.runtime.session,"session_mode":self.runtime.session_mode,
+                "packs":self.registry.describe(),
                 "at":datetime.now(timezone.utc).isoformat(),"error":error}
         if self.status_path:
             try:
@@ -111,7 +112,8 @@ class AuthorityReloader:
         return self.write_status(True,attempted_hash=new.manifest_hash,attempted_file_sha256=file_sha)
 
 def main()->None:
-    p=argparse.ArgumentParser(); p.add_argument("--manifest",required=True); p.add_argument("--agent",required=True); p.add_argument("--session",default=None,help="legacy fixed session; omit to take the session from the active manifest (minted per grant)"); p.add_argument("--host",default=socket.gethostname()); p.add_argument("--receipts",default=os.environ.get("MCP_REMOTE_SUDO_RECEIPTS","./receipts.jsonl")); p.add_argument("--port",type=int,default=8765); p.add_argument("--state-dir",default=os.environ.get("MCP_REMOTE_SUDO_STATE_DIR","/var/lib/mcp-remote-sudo")); a=p.parse_args()
+    p=argparse.ArgumentParser(); p.add_argument("--manifest",required=True); p.add_argument("--agent",required=True); p.add_argument("--session",default=None,help="legacy fixed session; omit to take the session from the active manifest (minted per grant)"); p.add_argument("--host",default=socket.gethostname()); p.add_argument("--receipts",default=os.environ.get("MCP_REMOTE_SUDO_RECEIPTS","./receipts.jsonl")); p.add_argument("--port",type=int,default=8765); p.add_argument("--state-dir",default=os.environ.get("MCP_REMOTE_SUDO_STATE_DIR","/var/lib/mcp-remote-sudo")); p.add_argument("--packs-dir",default=None,help="external Task Packs installed with pip --target; appended (lowest priority) to sys.path"); a=p.parse_args()
+    if a.packs_dir and os.path.isdir(a.packs_dir): sys.path.append(a.packs_dir)  # append, never prepend: packs must not shadow core modules
     authority=Authority.load(a.manifest); runtime=Runtime(authority,ReceiptWriter(a.receipts),agent=a.agent,session=a.session,host=a.host)
     if not 1 <= a.port <= 65535: p.error("--port must be between 1 and 65535")
     registry=packs.default_registry(); mcp=build_server(runtime,port=a.port,registry=registry)

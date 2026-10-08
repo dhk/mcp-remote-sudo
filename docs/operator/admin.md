@@ -61,3 +61,26 @@ any placeholder works, and the diff shows the minted value that replaces it. Eve
 A service started with a fixed `--session` (the legacy behaviour) keeps it. Grants must then carry the same session,
 and none is minted. `status` shows which mode is active. If the service's status file is unavailable, `grant` refuses
 rather than guess; pass `--session-mode manifest|fixed`. Re-run the installer to move an older unit to manifest mode.
+
+## External Task Packs
+
+```bash
+sudo $A pack install --requirements disk-pack.lock   # wheel-only, hash-pinned; restarts the service
+sudo $A pack remove example-pack                     # refused while the active authority uses its operations
+sudo $A pack list                                    # built-in + external (metadata only) + what the service loaded
+```
+
+The lockfile pins every distribution, dependencies included, as `name==version --hash=sha256:<digest>`. Installation:
+
+1. Runs `pip -I install --only-binary :all: --require-hashes --no-deps --no-compile --target <staging>`. Only wheels
+   are accepted, so no build hooks run as root, and nothing gets resolved beyond what the lockfile pins.
+2. Refuses any distribution that would replace mcp-remote-sudo or one of its runtime dependencies.
+3. Refuses any top-level import name that shadows the standard library, already resolves in the core environment, or
+   belongs to another installed pack.
+4. Moves the staged files into `/opt/mcp-remote-sudo/packs`. That directory is not a site directory, so wheel `.pth`
+   files never execute. The service appends it to `sys.path` at lowest priority (`--packs-dir`, wired up by #56).
+5. Restarts `mcp-remote-sudo.service`, rather than reloading it, so the service starts from a clean import state. It
+   then confirms the service is healthy.
+
+The admin never imports pack code. Installing a pack grants nothing: its operations become available, and a later
+`grant` decides what is exposed.
