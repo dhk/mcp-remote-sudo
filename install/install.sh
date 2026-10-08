@@ -10,8 +10,11 @@ LOG_DIR="/var/log/mcp-remote-sudo"
 MANIFEST="$CONFIG_DIR/authority.yaml"
 RECEIPTS="$LOG_DIR/receipts.jsonl"
 UNIT="/etc/systemd/system/$SERVICE.service"
-PORT="${MCP_REMOTE_SUDO_PORT:-8765}"
+SYSCTL_DROPIN="/etc/sysctl.d/60-mcp-remote-sudo-ping.conf"
+PROC_ROOT="/proc"
+DEFAULT_PORT=8765
 TTL_HOURS="${MCP_REMOTE_SUDO_TTL_HOURS:-24}"
+ICMP="${MCP_REMOTE_SUDO_ICMP:-1}"
 MODE="${1:-install}"
 
 say(){ printf '%s\n' "$*"; }
@@ -20,6 +23,112 @@ fail(){
   exit 1
 }
 have(){ command -v "$1" >/dev/null 2>&1; }
+
+# Port selection precedence: explicit MCP_REMOTE_SUDO_PORT, then the port the
+# existing unit already uses (a reinstall must not silently move the service),
+# then the default.
+existing_unit_port(){
+  [[ -f "$UNIT" ]] || return 0
+  sed -n 's/^ExecStart=.*--port \([0-9][0-9]*\).*$/\1/p' "$UNIT" | head -n 1
+}
+resolve_port(){
+  local existing
+  if [[ -n "${MCP_REMOTE_SUDO_PORT:-}" ]]; then
+    PORT="$MCP_REMOTE_SUDO_PORT"; PORT_SOURCE=env
+  elif existing="$(existing_unit_port)" && [[ -n "$existing" ]]; then
+    PORT="$existing"; PORT_SOURCE=existing_unit
+  else
+    PORT="$DEFAULT_PORT"; PORT_SOURCE=default
+  fi
+}
+
+# PIDs listening on TCP port $1 (empty when not visible, e.g. without root).
+listener_pids(){
+  have ss || return 0
+  ss -ltnpH "sport = :$1" 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u
+}
+port_has_listener(){
+  have ss && ss -ltnH "sport = :$1" 2>/dev/null | grep -q .
+}
+# Classify the listener on port $1: free | ours | foreign | unknown.
+# "ours" requires every listening PID to belong to this service's cgroup, so
+# another daemon on the same port is a collision even while this service runs.
+classify_port_listener(){
+  local port="$1" pids p
+  port_has_listener "$port" || { echo free; return; }
+  pids="$(listener_pids "$port")"
+  [[ -n "$pids" ]] || { echo unknown; return; }
+  for p in $pids; do
+    grep -qs "/$SERVICE\.service\$" "$PROC_ROOT/$p/cgroup" || { echo foreign; return; }
+  done
+  echo ours
+}
+
+# Back up an existing authority manifest before it is replaced. Prints the
+# backup path (nothing when there was no manifest). Receipts are never touched.
+backup_manifest(){
+  [[ -f "$MANIFEST" ]] || return 0
+  local backup
+  backup="$MANIFEST.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+  # Never overwrite an earlier backup (e.g. two runs within one second).
+  [[ ! -e "$backup" ]] || backup="$backup.$$"
+  [[ ! -e "$backup" ]] || return 1
+  # Explicit failure handling: errexit is disabled inside command substitution.
+  cp -p "$MANIFEST" "$backup" || return 1
+  cmp -s "$MANIFEST" "$backup" || return 1
+  printf '%s\n' "$backup"
+}
+
+# ICMP probes (network.probe) under NoNewPrivileges=true: ping's cap_net_raw
+# file capability cannot be gained, so permit unprivileged ICMP echo
+# (datagram) sockets for the service group only. Never grants CAP_NET_RAW.
+# Prints: enabled | already_permitted | disabled | skipped_conflicting_range
+ping_range_current(){ sysctl -n net.ipv4.ping_group_range 2>/dev/null | tr -s ' \t' ' '; }
+icmp_decision(){
+  local gid="$1" current lo hi
+  [[ "$ICMP" != "0" ]] || { echo disabled; return; }
+  current="$(ping_range_current)"
+  read -r lo hi <<<"$current"
+  # Our own range (e.g. set by a previous install or by hand): (re)write the
+  # drop-in so it persists across reboots.
+  [[ "$current" == "$gid $gid" ]] && { echo enabled; return; }
+  if [[ "$lo" =~ ^[0-9]+$ && "$hi" =~ ^[0-9]+$ ]] && (( lo <= gid && gid <= hi )); then
+    echo already_permitted; return
+  fi
+  # Only replace the kernel default (disabled, lo > hi). Never narrow or
+  # replace a range another administrator configured.
+  if [[ "$lo" =~ ^[0-9]+$ && "$hi" =~ ^[0-9]+$ ]] && (( lo > hi )); then
+    echo enabled; return
+  fi
+  echo skipped_conflicting_range
+}
+write_ping_dropin(){
+  local gid="$1"
+  cat >"$SYSCTL_DROPIN" <<EOF
+# Installed by mcp-remote-sudo. Allows ICMP echo (datagram) sockets for the
+# mcp-remote-sudo service group only, so network.probe works under
+# NoNewPrivileges=true without CAP_NET_RAW. Removed by uninstall.sh.
+net.ipv4.ping_group_range = $gid $gid
+EOF
+  chmod 0644 "$SYSCTL_DROPIN"
+}
+
+# Remove a previously installed drop-in (opt-out on reinstall). Resets the live
+# value only while it is still exactly the range we installed, then re-applies
+# any administrator-configured value from sysctl.d.
+remove_ping_dropin(){
+  local gid="$1"
+  [[ -f "$SYSCTL_DROPIN" ]] || return 0
+  rm -f "$SYSCTL_DROPIN"
+  if [[ "$(ping_range_current)" == "$gid $gid" ]]; then
+    sysctl -w net.ipv4.ping_group_range="1 0" >/dev/null || return 1
+    sysctl --system >/dev/null 2>&1 || true
+  fi
+}
+
+resolve_port
+# Allow the test suite to source the helpers above without running anything.
+if [[ "${MCP_REMOTE_SUDO_LIB_ONLY:-0}" == "1" ]]; then return 0 2>/dev/null || exit 0; fi
 
 preflight(){
   local missing=()
@@ -44,18 +153,23 @@ PY
     say "preflight: compatible"
   fi
   [[ "$PORT" =~ ^[0-9]+$ ]] && (( PORT >= 1 && PORT <= 65535 )) || { say "preflight: incompatible"; say "invalid_port: $PORT"; return 2; }
-  if have ss && ss -ltnH "sport = :$PORT" 2>/dev/null | grep -q .; then
-    # A healthy existing installation may legitimately own its configured port
-    # during an idempotent reinstall. Any other listener is a collision.
-    if ! systemctl is-active --quiet "$SERVICE.service" 2>/dev/null; then
-      say "preflight: incompatible"
-      say "port_in_use: 127.0.0.1:$PORT"
-      return 4
-    fi
-  fi
+  # A healthy existing installation may legitimately own its configured port
+  # during an idempotent reinstall. Any other listener is a collision.
+  PORT_OWNER="$(classify_port_listener "$PORT")"
+  case "$PORT_OWNER" in
+    foreign)
+      PORT_COLLISION=1; say "preflight: incompatible"; say "port_in_use: 127.0.0.1:$PORT"; return 4 ;;
+    unknown)
+      # Listener PIDs are not visible (typically: preflight without root).
+      if [[ "${EUID}" -eq 0 ]] || ! systemctl is-active --quiet "$SERVICE.service" 2>/dev/null; then
+        PORT_COLLISION=1; say "preflight: incompatible"; say "port_in_use: 127.0.0.1:$PORT"; return 4
+      fi
+      say "port_owner: unverified (rerun as root to confirm)" ;;
+  esac
   say "hostname: $(hostname)"
   say "python: $(python3 --version 2>&1)"
   say "port: $PORT"
+  say "port_source: $PORT_SOURCE"
 }
 
 plan(){
@@ -66,10 +180,12 @@ CREATE $CONFIG_DIR $STATE_DIR $LOG_DIR $PREFIX
 INSTALL pinned working tree into $PREFIX/src
 CREATE virtualenv: $PREFIX/venv
 INSTALL systemd unit: $UNIT
+BACKUP existing $MANIFEST to $MANIFEST.bak-<timestamp> (if present)
 INSTALL baseline authority: $MANIFEST
 GRANT journal read via systemd-journal group when present
 ENABLE and START: $SERVICE.service
-LISTEN: 127.0.0.1:$PORT only
+CONFIGURE ICMP echo sockets for group $SERVICE_USER only: $SYSCTL_DROPIN (skip with MCP_REMOTE_SUDO_ICMP=0)
+LISTEN: 127.0.0.1:$PORT only (port source: $PORT_SOURCE)
 RUNTIME_PRIVILEGED_MUTATION: disabled
 EOF
 }
@@ -81,7 +197,7 @@ if [[ "$MODE" == "--plan" ]]; then preflight || true; plan; exit 0; fi
 if ! preflight; then
   rc=$?
   # Preserve a specific machine-readable reason for a listener collision.
-  if have ss && ss -ltnH "sport = :$PORT" 2>/dev/null | grep -q .; then fail "port_in_use"; fi
+  if [[ "${PORT_COLLISION:-0}" == 1 ]]; then fail "port_in_use"; fi
   fail "preflight_failed"
 fi
 plan
@@ -125,6 +241,7 @@ print((datetime.now(timezone.utc)+timedelta(hours=int(sys.argv[1]))).isoformat()
 PY
 )"
 
+MANIFEST_BACKUP="$(backup_manifest)" || fail "manifest_backup_failed"
 cat >"$MANIFEST" <<EOF
 apiVersion: mcp-remote-sudo/v1
 kind: TaskAuthority
@@ -187,6 +304,15 @@ if ! getent group systemd-journal >/dev/null; then
   sed -i '/^SupplementaryGroups=systemd-journal$/d' "$UNIT"
 fi
 
+SERVICE_GID="$(getent group "$SERVICE_USER" | cut -d: -f3)"
+ICMP_STATUS="$(icmp_decision "$SERVICE_GID")"
+if [[ "$ICMP_STATUS" == enabled ]]; then
+  write_ping_dropin "$SERVICE_GID"
+  sysctl -p "$SYSCTL_DROPIN" >/dev/null || fail "icmp_sysctl_failed"
+elif [[ "$ICMP_STATUS" == disabled ]]; then
+  remove_ping_dropin "$SERVICE_GID" || fail "icmp_sysctl_failed"
+fi
+
 systemctl daemon-reload
 systemctl enable "$SERVICE.service"
 systemctl restart "$SERVICE.service"
@@ -224,6 +350,9 @@ service_user: $SERVICE_USER
 manifest: $MANIFEST
 manifest_hash: $MANIFEST_HASH
 manifest_not_after: $NOT_AFTER
+manifest_backup: ${MANIFEST_BACKUP:-none}
+port_source: $PORT_SOURCE
+icmp_probe: $ICMP_STATUS
 receipts: $RECEIPTS
 transport: loopback-only
 privileged_mutation: disabled
