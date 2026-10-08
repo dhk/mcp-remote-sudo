@@ -66,7 +66,8 @@ def _widens(template: Any, caller: Any) -> bool:
     if not isinstance(template, dict):
         return caller != template
     if not isinstance(caller, dict):
-        return "enum" in template and caller not in template["enum"]
+        # An exact value widens unless the template itself would accept it (same matcher as authorization).
+        return not Authority._args_match({"v": caller}, {"v": template})
     if "enum" in template and ("enum" not in caller or not set(map(repr, caller["enum"])) <= set(map(repr, template["enum"]))):
         return True
     if "minimum" in template and ("minimum" not in caller or caller["minimum"] < template["minimum"]):
@@ -89,8 +90,11 @@ def review_warnings(manifest: dict[str, Any], registry: Registry) -> list[str]:
             warnings.append(f"{name} is a mutating operation (confirmation: {rule.get('confirmation', 'operator')})")
         for p in op.params:
             spec = args.get(p.name)
+            scalar = p.type in (str, int, float, bool) or getattr(p.type, "__args__", ()) and all(
+                t in (str, int, float, bool, type(None)) for t in p.type.__args__)
             if spec is None:
-                warnings.append(f"{name}.{p.name} is unconstrained")
+                if scalar and not op.needs_runtime:   # only parameters the constraint grammar can meaningfully bound
+                    warnings.append(f"{name}.{p.name} is unconstrained")
             elif isinstance(spec, dict) and p.type in (int, float) and "enum" not in spec and ("minimum" not in spec or "maximum" not in spec):
                 warnings.append(f"{name}.{p.name} has a one-sided bound {spec}")
             if spec is not None:
@@ -174,12 +178,16 @@ def read_for_grant(state_dir: str | Path, proposal_id: str, expected_sha256: str
     if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256 or ""):
         raise ProposalError("--sha256 must be a 64-character lowercase hex digest")
     directory = proposals_dir(state_dir)
-    if directory.is_symlink() or not directory.is_dir():
-        raise ProposalError(f"{directory} is not a plain directory")
     try:
-        fd = os.open(directory / f"{proposal_id}.yaml", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        raise ProposalError(f"{directory} is not a plain directory") from None
+    try:
+        fd = os.open(f"{proposal_id}.yaml", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
     except OSError as exc:
         raise ProposalError(f"cannot open proposal {proposal_id}: {exc.strerror}") from exc
+    finally:
+        os.close(dir_fd)
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):

@@ -179,3 +179,18 @@ def test_digest_mismatch_does_not_echo_the_actual_digest(tmp_path):
     with pytest.raises(ProposalError) as exc:
         read_for_grant(tmp_path, pid, "0" * 64)
     assert digest not in str(exc.value)
+
+
+@pytest.mark.parametrize("op,arg,value", [("journal.query","lines",500), ("journal.query","lines",0), ("network.probe","count",True)])
+def test_exact_values_outside_the_template_are_flagged(op, arg, value):
+    extra = {"target": {"enum": ["1.1.1.1"]}} if op == "network.probe" else {}
+    _, warnings = render(registry=REG, active=active(), purpose="p", ttl_minutes=60, operations=[op],
+                         constraints={op: {arg: value, **extra}})
+    assert any(f"{op}.{arg}" in w and "widens the pack template" in w for w in warnings)
+
+
+def test_a_templated_read_only_proposal_has_no_noise():
+    _, warnings = render(registry=REG, active=active(), purpose="p", ttl_minutes=60,
+                         operations=["system.info", "kernel.wifi.log", "receipts.tail"], constraints=None)
+    assert [w for w in warnings if "authority.propose" in w] == []
+    assert not any("receipts.tail" in w for w in warnings)
