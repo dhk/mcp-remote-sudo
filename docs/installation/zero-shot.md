@@ -310,6 +310,9 @@ service: mcp-remote-sudo.service
 service_user: mcp-remote-sudo
 manifest: /etc/mcp-remote-sudo/authority.yaml
 manifest_hash: <sha256>
+manifest_backup: <path-or-none>
+port_source: env|existing_unit|default
+icmp_probe: enabled|already_permitted|disabled|skipped_conflicting_range
 receipts: /var/log/mcp-remote-sudo/receipts.jsonl
 transport: loopback-only
 privileged_mutation: disabled
@@ -373,6 +376,43 @@ An upgrade must:
 
 A version upgrade must not silently upgrade an authority manifest to broader permissions.
 
+### Reinstalling over an existing installation
+
+Rerunning the installer on a host that already has mcp-remote-sudo is supported and conservative:
+
+- **Port.** The listen port is chosen in this order: `MCP_REMOTE_SUDO_PORT` if set; otherwise the `--port` already in the
+  installed unit's `ExecStart`; otherwise `8765`. A reinstall therefore never silently moves the service to another port.
+  The completion block reports `port_source: env | existing_unit | default`.
+- **Port collisions.** A listener on the chosen port is accepted only if every listening process belongs to
+  `mcp-remote-sudo.service` (checked through its cgroup). Another daemon on the same port is a collision (`port_in_use`)
+  even while mcp-remote-sudo is running. Unprivileged `--preflight` cannot see other users' sockets and reports
+  `port_owner: unverified`; the privileged install repeats the check with full visibility.
+- **Authority.** An existing `/etc/mcp-remote-sudo/authority.yaml` is copied to `authority.yaml.bak-<UTC timestamp>`
+  before the baseline is written; the completion block reports `manifest_backup:`. Receipts are never modified.
+
+## ICMP probes under systemd hardening
+
+`network.probe` runs `ping`. On most distributions `ping` gets raw-socket access from a file capability
+(`cap_net_raw`), which the service cannot gain because its unit sets `NoNewPrivileges=true`. Rather than weaken that,
+the installer permits unprivileged ICMP *echo datagram* sockets for the service's group only:
+
+```text
+/etc/sysctl.d/60-mcp-remote-sudo-ping.conf
+net.ipv4.ping_group_range = <mcp-remote-sudo gid> <mcp-remote-sudo gid>
+```
+
+Trade-offs and safeguards:
+
+- This is a host-wide sysctl, but it admits only one group, and only for ICMP echo sockets — not raw sockets.
+  The service never receives `CAP_NET_RAW` or any ambient capability.
+- The installer only replaces the kernel default (disabled, e.g. `1 0`) or its own previous value. If an administrator
+  already configured a range that includes the service group, nothing is written (`icmp_probe: already_permitted`);
+  if they configured a range that excludes it, the installer leaves it alone (`icmp_probe: skipped_conflicting_range`)
+  and `network.probe` will fail until an administrator decides.
+- Opt out with `MCP_REMOTE_SUDO_ICMP=0` (`icmp_probe: disabled`).
+- `uninstall.sh` removes the drop-in and, only if the live value is still exactly the service group's range, resets it
+  and re-applies the remaining sysctl configuration.
+
 ## Uninstall
 
 Uninstall must be explicit and independently callable.
@@ -382,7 +422,7 @@ Expected sequence:
 1. stop and disable the service;
 2. remove the systemd unit;
 3. remove installed program files;
-4. remove runtime permission grants;
+4. remove runtime permission grants (including the ICMP sysctl drop-in);
 5. optionally remove the service account;
 6. preserve receipts by default;
 7. preserve authority configuration by default unless explicitly purged;
