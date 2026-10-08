@@ -113,8 +113,10 @@ server fails at startup.
 
 - **Built-in packs** ship inside mcp-remote-sudo and update with it (#16).
 - **External packs** are installed by the operator, never by the agent, with
-  `mcp-remote-sudo-admin pack install <name>==<version> --sha256 <digest>` or a local wheel path (#38). This installs
-  into the service's own virtualenv only, never system-wide, and reloads the service.
+  `mcp-remote-sudo-admin pack install --requirements <lockfile>` (#38). The lockfile pins every distribution, including
+  dependencies, to an exact version and hash. Installation accepts **wheels only** (`--only-binary :all:
+  --require-hashes --no-deps` against the lockfile), so no build hooks ever run as root. It installs into the service's
+  own virtualenv only, never system-wide, refuses to replace mcp-remote-sudo's own distributions, and then reloads.
 - `pack list` shows the installed packs and which of their operations the active authority currently exposes.
 - `pack remove` uninstalls a pack. It refuses while the active authority still references any of its operations.
 
@@ -138,9 +140,13 @@ stays the approval point. Claude never holds root.
 ### Proposals (#40)
 
 `authority.propose(purpose, operations, constraints, ttl_minutes)` takes operations from the installed packs and builds
-a manifest from their templates. It stores the result as a proposal and returns the YAML plus a diff against the
-current authority. **It grants nothing**: `expansion: prohibited` still holds. The operator applies a proposal with
-`admin grant --proposal <id>`.
+a manifest from their templates. It stores the result as a proposal and returns the YAML, a diff against the current
+authority, and the proposal's SHA-256 digest. **It grants nothing**: `expansion: prohibited` still holds.
+
+The proposal store is writable by the unprivileged service, so the operator grants **by content, not by ID**:
+`admin grant --proposal <id> --sha256 <digest>`. The admin command first copies the proposal into root-owned staging,
+then checks the digest against the one the operator reviewed, re-validates, and only then installs it. A proposal swapped
+after review fails the digest check.
 
 ### Controlled mutation (#41–#43)
 
@@ -148,8 +154,16 @@ current authority. **It grants nothing**: `expansion: prohibited` still holds. T
   an option, because the main service keeps `NoNewPrivileges=true`. The helper only accepts requests from the service
   user, only runs operations from its own fixed table, and re-checks the active manifest itself as a second layer of
   defence.
-- **Confirmation (#42).** Every mutating operation asks the operator for confirmation through MCP elicitation. If the
-  client can't ask, the operation is refused, unless the grant explicitly says `confirmation: grant-only`.
+- **Confirmation (#42).** Mutating operations need per-action confirmation, at one of two strengths the grant chooses:
+  - `confirmation: operator` (the default for mutation templates). The helper itself refuses to act until a root-owned
+    approval record exists for that exact request: request ID, operation, arguments and manifest hash. The operator
+    creates it with `admin approve <request-id>`, which needs sudo. Code running as the service user cannot forge it, so
+    this control holds even if the service user is compromised.
+  - `confirmation: elicitation`. The server asks through MCP elicitation, and refuses if the client can't ask. This is
+    a convenience and accountability control, **not** a boundary against code running as the service user, which can
+    reach the helper socket directly. Against that threat, the boundary is the helper's fixed operation table plus its
+    re-check of the manifest. The documentation says so explicitly.
+  - `confirmation: grant-only` skips per-action confirmation, and must be stated explicitly in the grant.
 - **First remediation pack (#43).** `wifi-remediate` provides radio toggle, restart of an allowlisted unit, and reload
   of an allowlisted module. These are the recovery steps for the lobster pattern, from least to most invasive, and
   every receipt records the inverse operation where one exists (a service restart, for example, has none).
