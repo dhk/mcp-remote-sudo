@@ -2,9 +2,10 @@ from __future__ import annotations
 # Installed before the heavy imports below: Python's default SIGHUP action terminates the process, and systemd treats
 # that as a clean exit (no restart). A reload requested while the service is still starting is recorded here and
 # applied once the event-loop handler is in place (see main()).
-import signal as _signal
+import signal as _signal, threading as _threading
 _EARLY_HUP:list[int]=[]
-_signal.signal(_signal.SIGHUP,lambda signum,frame:_EARLY_HUP.append(signum))
+if _threading.current_thread() is _threading.main_thread():   # signal handlers can only be set on the main thread
+    _signal.signal(_signal.SIGHUP,lambda signum,frame:_EARLY_HUP.append(signum))
 import argparse, asyncio, functools, hashlib, inspect, json, logging, os, signal, socket
 import yaml
 from datetime import datetime, timezone

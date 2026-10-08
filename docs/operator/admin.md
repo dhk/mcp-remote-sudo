@@ -31,7 +31,7 @@ What happens next depends on the service's answer:
 
 - **It rejects the new authority.** That happens on a validation error, a binding mismatch, or an operation that no
   installed pack provides. The service keeps its previous authority, and `grant` restores the backup and exits
-  non-zero.
+  non-zero. If that backup isn't what the service was running, it's restored but **not** reloaded.
 - **It doesn't confirm in time.** By default the wait is 45s, longer than any tool's own timeout. Tool calls run on the
   service's event loop, so a reload waits for the call that's running.
 - **The signal can't be delivered**, for example because the service is stopped.
@@ -39,7 +39,8 @@ What happens next depends on the service's answer:
 In the last two cases the new file **stays installed**. The command exits non-zero and says so, and the authority
 applies when the service processes the reload or next starts. **A `revoke` is never rolled back.**
 
-Every reload, accepted or rejected, writes an `authority.reload` receipt.
+Only one admin operation runs at a time (`grant` and `revoke` take a lock). Every reload, accepted or rejected,
+writes an `authority.reload` receipt.
 
 ## Safety notes
 

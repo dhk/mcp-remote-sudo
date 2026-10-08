@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import fcntl
 import hashlib
 import json
 import os
@@ -168,6 +169,16 @@ class Admin:
 
     # -- install + reload ---------------------------------------------------------------------
     def _install(self, new: Authority, *, yes: bool, timeout: float, action: str) -> Authority:
+        # One admin operation at a time: a concurrent grant's rollback must never undo another operator's revoke.
+        lock_path = self.manifest.with_name(f".{self.manifest.name}.admin.lock")
+        with open(lock_path, "a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise AdminError("another mcp-remote-sudo-admin operation is in progress") from None
+            return self._install_locked(new, yes=yes, timeout=timeout, action=action)
+
+    def _install_locked(self, new: Authority, *, yes: bool, timeout: float, action: str) -> Authority:
         current = self.current()
         if current is not None and new.manifest["binding"] != current.manifest["binding"]:
             raise AdminError(f"binding {new.manifest['binding']} does not match the active manifest's binding {current.manifest['binding']}")
@@ -187,7 +198,8 @@ class Admin:
             self.say(f"{action}: active authority is now {new.manifest['metadata']['id']} ({new.manifest_hash})"
                      + (f"; previous saved to {backup}" if backup else ""))
             return new
-        if outcome == "rejected" and action == "grant" and backup is not None:
+        if outcome == "rejected" and action == "grant" and backup is not None \
+                and hashlib.sha256(self.manifest.read_bytes()).hexdigest() == written:
             # Only an explicit rejection by the service rolls a grant back; the service kept its previous authority.
             os.replace(backup, self.manifest)
             if not disk_is_running:

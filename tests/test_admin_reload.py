@@ -261,3 +261,50 @@ def test_rejected_grant_does_not_activate_an_unreviewed_disk_file(tmp_path, monk
         h.admin.grant(str(cand),yes=True,timeout=2)
     assert sum(1 for x in signals if x[:2]==["systemctl","kill"])==1          # no second signal
     assert h.tools()=={"system_info","network_status"}                          # still the original authority
+
+
+def test_concurrent_admin_operations_are_refused(tmp_path, monkeypatch):
+    import fcntl
+    h=Host(tmp_path,monkeypatch)
+    with open(h.manifest.with_name(f".{h.manifest.name}.admin.lock"),"a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        with pytest.raises(AdminError, match="in progress"):
+            h.admin.revoke(yes=True,timeout=1)
+
+
+def test_rollback_never_overwrites_a_file_someone_else_installed(tmp_path, monkeypatch):
+    h=Host(tmp_path,monkeypatch)
+    def fake_run(argv):
+        if list(argv)[:2]==["systemctl","kill"]:
+            h.reloader.reload()                                                  # rejects "bad" (unknown op)
+            h.manifest.write_text(yaml.safe_dump(manifest([],id="someone-elses")))   # e.g. installed out of band
+        class R: returncode=0; stdout=""; stderr=""
+        return R()
+    monkeypatch.setattr(admin_mod,"run",fake_run)
+    with pytest.raises(AdminError, match="REJECTED"):
+        h.admin.grant(str(h.write_candidate(tmp_path,manifest(["system.info","example.external"],id="bad"))),yes=True,timeout=2)
+    assert yaml.safe_load(h.manifest.read_text())["metadata"]["id"]=="someone-elses"
+
+
+def test_main_applies_a_sighup_queued_during_startup(tmp_path, monkeypatch):
+    import signal, sys
+    from mcp_remote_sudo import server as srv
+    assert signal.getsignal(signal.SIGHUP) not in (signal.SIG_DFL, None)       # installed at import (main thread)
+    mpath=tmp_path/"a.yaml"; mpath.write_text(yaml.safe_dump(manifest(["system.info"],id="one")))
+    def fake_serve(self):
+        async def run():
+            mpath.write_text(yaml.safe_dump(manifest(["system.info","network.status"],id="two")))
+        return run()
+    monkeypatch.setattr(srv.FastMCP,"run_streamable_http_async",fake_serve)
+    monkeypatch.setattr(srv,"_EARLY_HUP",[signal.SIGHUP])                        # a SIGHUP arrived while starting
+    added=[]
+    class Loop:
+        def add_signal_handler(self,sig,cb): added.append(sig)
+    monkeypatch.setattr(srv.asyncio,"get_running_loop",lambda: Loop())
+    monkeypatch.setattr(sys,"argv",["mcp-remote-sudo","--manifest",str(mpath),"--agent","mcp-remote-sudo","--session","baseline",
+                                    "--host","lobster","--receipts",str(tmp_path/"r.jsonl"),"--state-dir",str(tmp_path),"--port","18999"])
+    srv.main()
+    st=json.loads((tmp_path/"authority-status.json").read_text())
+    assert added==[signal.SIGHUP] and st["manifest_id"]=="one"
+    reloads=[json.loads(x) for x in (tmp_path/"r.jsonl").read_text().splitlines() if '"authority.reload"' in x]
+    assert len(reloads)==1 and reloads[0]["result"]=="success"     # the queued startup SIGHUP was applied, once
