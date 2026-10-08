@@ -1,6 +1,6 @@
 from __future__ import annotations
 import argparse, inspect, os, socket
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 from mcp.server.fastmcp import FastMCP
 from . import packs
 from .authority import Authority
@@ -11,8 +11,8 @@ class Runtime:
         self.authority=authority; self.receipts=receipts; self.agent=agent; self.session=session; self.host=host
         binding=authority.check_binding(agent=agent,session=session,host=host)
         if not binding.allowed: raise ValueError(binding.reason)
-    def invoke(self,tool:str,args:dict[str,Any],fn:Callable[...,Any])->Any:
-        d=self.authority.evaluate(tool,args)
+    def invoke(self,tool:str,args:dict[str,Any],fn:Callable[...,Any],gated:Sequence[str]=())->Any:
+        d=self.authority.evaluate(tool,args,gated=tuple(gated))
         base={"manifest_id":self.authority.manifest["metadata"]["id"],"manifest_version":self.authority.manifest["metadata"].get("version"),"manifest_hash":self.authority.manifest_hash,"agent":self.agent,"session":self.session,"host":self.host,"tool":tool,"arguments":args,"decision":"allow" if d.allowed else "deny","reason":d.reason}
         if not d.allowed:
             self.receipts.write({**base,"result":"denied"}); raise PermissionError(f"{tool}: {d.reason}")
@@ -23,7 +23,9 @@ class Runtime:
 
 def _tool_function(runtime:Runtime, op:packs.Operation)->Callable[...,Any]:
     """An MCP tool callable whose typed signature comes from the pack declaration."""
-    def call(**supplied:Any)->dict: return runtime.invoke(op.name,op.normalize(supplied),op.adapter)
+    def call(**supplied:Any)->dict:
+        args=op.normalize(supplied); gated=op.gated_in_use(args)
+        return runtime.invoke(op.name,args,op.adapter,**({"gated":gated} if gated else {}))
     params=[inspect.Parameter(p.name,inspect.Parameter.KEYWORD_ONLY,annotation=p.type,
                               default=inspect.Parameter.empty if p.default is packs.REQUIRED else p.default) for p in op.params]
     call.__name__=op.tool; call.__doc__=op.description
