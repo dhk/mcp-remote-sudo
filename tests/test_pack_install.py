@@ -230,3 +230,66 @@ def test_admin_pack_remove_refuses_without_service_status(tmp_path, monkeypatch)
     s = Svc(tmp_path, monkeypatch); (s.state / "authority-status.json").unlink()
     with pytest.raises(AdminError, match="status unavailable"):
         s.admin.pack_remove("example-pack", yes=True, timeout=2)
+
+
+def test_concurrent_pack_operations_are_refused(tmp_path, monkeypatch):
+    import fcntl
+    s = Svc(tmp_path, monkeypatch); s.packs_dir.mkdir()
+    lf = tmp_path / "lock.txt"; lf.write_text(lock("example-pack==1.0"))
+    with open(s.packs_dir / ".lock", "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        with pytest.raises(AdminError, match="in progress"):
+            s.admin.pack_install(str(lf), yes=True, timeout=1)
+        with pytest.raises(AdminError, match="in progress"):
+            s.admin.pack_remove("example-pack", yes=True, timeout=1)
+
+
+def test_swap_failure_after_moving_the_old_version_restores_it(tmp_path, monkeypatch):
+    install(tmp_path, ["example-pack==1.0"], {}).commit()
+    real_replace = pack_install.os.replace
+    def flaky(src, dst):
+        if Path(src).name == "example-pack" and ".staging-" in str(src):
+            raise OSError("disk full")
+        return real_replace(src, dst)
+    monkeypatch.setattr(pack_install.os, "replace", flaky)
+    with pytest.raises(OSError, match="disk full"):
+        install(tmp_path, ["example-pack==2.0"], {"example-pack": {"version": "2.0"}})
+    monkeypatch.setattr(pack_install.os, "replace", real_replace)
+    assert [d["version"] for d in pack_install.installed(tmp_path / "packs")] == ["1.0"]
+
+
+def test_interrupt_during_confirmation_rolls_back(tmp_path, monkeypatch):
+    s = Svc(tmp_path, monkeypatch)
+    lf = tmp_path / "lock.txt"; lf.write_text(lock("example-pack==1.0"))
+    real = s.admin._restart_and_confirm; calls = {"n": 0}
+    def interrupted(timeout):
+        calls["n"] += 1
+        if calls["n"] == 1: raise KeyboardInterrupt
+        return real(timeout)
+    monkeypatch.setattr(s.admin, "_restart_and_confirm", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        s.admin.pack_install(str(lf), yes=True, timeout=2)
+    assert pack_install.installed_trees(s.packs_dir) == {} and calls["n"] == 2
+
+
+def test_stale_directories_from_an_interrupted_run_are_cleaned_up(tmp_path):
+    packs_dir = tmp_path / "packs"; (packs_dir / ".staging-999" / "x").mkdir(parents=True); (packs_dir / ".previous-999").mkdir()
+    with pack_install.locked(packs_dir):
+        pass
+    assert sorted(p.name for p in packs_dir.iterdir()) == [".lock"]
+
+
+def test_compiled_extension_modules_are_accepted_and_checked(tmp_path):
+    import importlib.machinery
+    suffix = importlib.machinery.EXTENSION_SUFFIXES[0]
+    def with_ext(target: Path, **kw):
+        fake_wheel(target, **kw); (target / f"_example_backend{suffix}").write_bytes(b"\x7fELF")
+    lf = tmp_path / "lock.txt"; lf.write_text(lock("example-pack==1.0"))
+    class Pip(FakePip):
+        def __call__(self, argv):
+            argv = list(argv)
+            class R: returncode = 0; stdout = ""; stderr = ""
+            with_ext(Path(argv[argv.index("--target") + 1])); return R()
+    pack_install.install(lf, tmp_path / "packs", Pip({})).commit()
+    assert (tmp_path / "packs" / "example-pack" / f"_example_backend{suffix}").exists()
+    assert pack_install._module_name(f"_ssl{suffix}") == "_ssl" and "_ssl" in sys.stdlib_module_names

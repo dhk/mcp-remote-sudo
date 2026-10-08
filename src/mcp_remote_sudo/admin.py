@@ -202,6 +202,13 @@ class Admin:
         if not yes and input(f"install packs pinned in {lockfile} into {self.packs_dir} and restart {self.service}? [y/N] ").strip().lower() not in ("y", "yes"):
             raise AdminError("aborted by operator")
         try:
+            with pack_install.locked(self.packs_dir):
+                return self._pack_install_locked(lockfile, timeout)
+        except pack_install.PackInstallError as exc:
+            raise AdminError(str(exc)) from exc
+
+    def _pack_install_locked(self, lockfile: str, timeout: float) -> list[str]:
+        try:
             txn = pack_install.install(Path(lockfile), self.packs_dir, run)
         except (pack_install.PackInstallError, OSError) as exc:
             raise AdminError(str(exc)) from exc
@@ -214,8 +221,14 @@ class Admin:
             missing = sorted(expected - loaded)
             if missing:
                 raise AdminError(f"the service restarted but did not load {missing} (is --packs-dir set on the unit?)")
-        except AdminError as exc:
+        except BaseException as exc:   # incl. Ctrl-C: never leave unconfirmed packs live
             txn.rollback()
+            if not isinstance(exc, AdminError):
+                try:
+                    self._restart_and_confirm(timeout)   # bring the service back on the restored packs
+                except BaseException:
+                    pass
+                raise exc
             try:
                 self._restart_and_confirm(timeout)
                 restored = "previous packs restored and service restarted"
@@ -237,6 +250,13 @@ class Admin:
         referenced = sorted(provided & allowed)
         if referenced:
             raise AdminError(f"the active authority still allows {referenced} from {dist}; revoke or re-grant first")
+        try:
+            with pack_install.locked(self.packs_dir):
+                return self._pack_remove_locked(dist, allowed, yes=yes, timeout=timeout)
+        except pack_install.PackInstallError as exc:
+            raise AdminError(str(exc)) from exc
+
+    def _pack_remove_locked(self, dist: str, allowed: set, *, yes: bool, timeout: float) -> None:
         needed_by = pack_install.dependents(self.packs_dir, dist)
         if needed_by:
             raise AdminError(f"{dist} is required by installed packs {needed_by}; remove those first")

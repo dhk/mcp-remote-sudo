@@ -16,11 +16,14 @@ replace mcp-remote-sudo or its runtime dependencies; never import pack code here
 """
 from __future__ import annotations
 
+import fcntl
+import importlib.machinery
 import importlib.util
 import os
 import re
 import shutil
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
@@ -28,7 +31,6 @@ from typing import Callable, Iterable, Sequence
 
 PIN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([A-Za-z0-9][A-Za-z0-9.+!_-]*)$")
 HASH = re.compile(r"^--hash=sha256:[0-9a-f]{64}$")
-MODULE_ENTRY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.py)?$")
 IGNORED_ENTRIES = {"bin", "__pycache__"}   # per-distribution tree: scripts can't collide with another pack
 
 
@@ -108,8 +110,29 @@ def actual_entries(tree: Path) -> set[str]:
     return names
 
 
-def _module_name(entry: str) -> str:
-    return entry[:-3] if entry.endswith(".py") else entry
+def _module_name(entry: str) -> str | None:
+    """The importable top-level name for a staged entry, or None if it isn't a plain module/package/extension."""
+    for suffix in sorted(importlib.machinery.EXTENSION_SUFFIXES, key=len, reverse=True):   # e.g. _cffi_backend.cpython-312-x86_64-linux-gnu.so
+        if entry.endswith(suffix) and entry[:-len(suffix)].isidentifier():
+            return entry[:-len(suffix)]
+    if entry.endswith(".py") and entry[:-3].isidentifier():
+        return entry[:-3]
+    return entry if entry.isidentifier() else None
+
+
+@contextmanager
+def locked(packs_dir: Path):
+    """Exclusive lock over the packs directory for a whole install/remove (incl. restart confirmation)."""
+    packs_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
+    with open(packs_dir / ".lock", "a") as fh:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise PackInstallError("another pack install/remove is in progress") from None
+        for stale in list(packs_dir.glob(".staging-*")) + list(packs_dir.glob(".previous-*")):
+            # Leftovers of an interrupted run (we hold the lock, so no live run owns them).
+            if stale.is_dir() and not stale.is_symlink(): shutil.rmtree(stale, ignore_errors=True)
+        yield
 
 
 def _core_top_levels(exclude: Path) -> set[str]:
@@ -161,9 +184,9 @@ def check_staged(staged: dict[str, Path], packs_dir: Path) -> None:
         if dist is None or canonical(dist.metadata["Name"] or "") != name:
             raise PackInstallError(f"{name}: staging does not contain exactly that one distribution")
         for entry in actual_entries(tree):
-            if entry.startswith(".") or not MODULE_ENTRY.fullmatch(entry) or (tree / entry).is_symlink():
-                raise PackInstallError(f"{name}: unexpected top-level entry {entry!r}")
             mod = _module_name(entry)
+            if entry.startswith(".") or mod is None or (tree / entry).is_symlink():
+                raise PackInstallError(f"{name}: unexpected top-level entry {entry!r}")
             if mod in sys.stdlib_module_names:
                 raise PackInstallError(f"{name}: top-level name {mod!r} shadows the standard library")
             if mod in core or _resolvable_in_core(mod, packs_dir):
@@ -181,7 +204,8 @@ class Transaction:
     packs_dir: Path
     installed: list[str]
     _old: Path
-    _swapped: list[str] = field(default_factory=list)
+    _swapped: list[str] = field(default_factory=list)   # names whose directory changed (old moved aside and/or new moved in)
+    _new: set[str] = field(default_factory=set)         # names whose new tree is in place
 
     def commit(self) -> None:
         shutil.rmtree(self._old, ignore_errors=True)
@@ -189,8 +213,8 @@ class Transaction:
     def rollback(self) -> None:
         for name in reversed(self._swapped):
             target = self.packs_dir / name
-            if target.exists(): shutil.rmtree(target)
             previous = self._old / name
+            if target.exists() and (previous.exists() or name in self._new): shutil.rmtree(target)
             if previous.exists(): os.replace(previous, target)
         shutil.rmtree(self._old, ignore_errors=True)
 
@@ -221,9 +245,10 @@ def install(lockfile: Path, packs_dir: Path, run: Callable[[Sequence[str]], obje
                 target = packs_dir / name
                 if target.is_symlink():
                     raise PackInstallError(f"{target} is a symlink; refusing")
+                txn._swapped.append(name)                 # recorded first: rollback must restore a moved-aside version
                 if target.exists(): os.replace(target, old / name)
                 os.replace(tree, target)
-                txn._swapped.append(name)
+                txn._new.add(name)
                 dist = _dist_in(target)
                 txn.installed.append(f"{name}=={dist.version if dist else '?'}")
         except Exception:
