@@ -18,7 +18,7 @@ PACK = TaskPack(
                   description="systemctl show for one unit."),
         Operation("journal.query", "journal_query", adapters.journal_query,
                   (Param("unit", str), Param("lines", int, 100),
-                   Param("boot", Optional[int], None), Param("since_minutes", Optional[int], None)),
+                   Param("boot", Optional[int], None, gated=True), Param("since_minutes", Optional[int], None, gated=True)),
                   description="Last N journal lines for one unit; optionally one boot (0 current, -1 previous) "
                               "and/or the last N minutes.",
                   privileges=("journal-read",)),

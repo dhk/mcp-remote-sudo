@@ -24,6 +24,10 @@ class Param:
     name: str
     type: type
     default: Any = REQUIRED
+    # A gated parameter widens what the operation reads when set to a non-default value (e.g. older boots).
+    # Non-default values are allowed only if the matching grant rule constrains this argument explicitly, so
+    # manifests written before the parameter existed keep their original scope.
+    gated: bool = False
 
 
 @dataclass(frozen=True)
@@ -35,6 +39,9 @@ class Operation:
     description: str = ""
     mutating: bool = False
     privileges: tuple[str, ...] = ()   # host privileges the adapter needs, e.g. "journal-read"
+
+    def gated_in_use(self, args: dict[str, Any]) -> list[str]:
+        return [p.name for p in self.params if p.gated and p.name in args and args[p.name] != p.default]
 
     def normalize(self, supplied: dict[str, Any]) -> dict[str, Any]:
         """Return the full argument mapping (defaults filled in) that is evaluated and receipted."""

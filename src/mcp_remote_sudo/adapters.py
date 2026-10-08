@@ -8,9 +8,11 @@ UNIT=re.compile(r"^[A-Za-z0-9_.@:-]+$")
 MODULE=re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 TARGET=re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,252}$")
 
-def run(argv: Sequence[str], timeout: int=15)->dict:
+def run(argv: Sequence[str], timeout: int=15, max_stdout: int=20000)->dict:
     p=subprocess.run(list(argv),capture_output=True,text=True,timeout=timeout,check=False)
-    return {"argv":list(argv),"returncode":p.returncode,"stdout":p.stdout[-20000:],"stderr":p.stderr[-5000:]}
+    out=p.stdout; truncated=len(out)>max_stdout
+    if truncated: out=out[-max_stdout:]
+    return {"argv":list(argv),"returncode":p.returncode,"stdout":out,"stderr":p.stderr[-5000:],**({"truncated":True} if truncated else {})}
 
 def system_info()->dict: return {"uname":run(["uname","-a"]),"os_release":run(["cat","/etc/os-release"])}
 def network_status()->dict: return {"ip":run(["ip","-json","address"]),"routes":run(["ip","-json","route"])}
@@ -32,17 +34,21 @@ def connectivity_probe(target:str,count:int=4)->dict:
     return {"ping":run(["ping","-n","-c",str(count),"--",target],timeout=min(15, count*2+3))}
 
 # Driver/stack terms matched on token boundaries ("wl" must not match inside "owl" or "IN=wlp2s0"-only noise).
-WIFI_LOG_PATTERN=re.compile(r"(?<![a-z0-9])(?:wl|wlp\w*|wlan\d*|wifi|wi-fi|broadcom|brcm\w*|b43\w*|cfg80211|mac80211|80211|networkmanager|wpa_supplicant)(?![a-z0-9])")
+WIFI_LOG_PATTERN=re.compile(r"(?<![a-z0-9])(?:wl|wl[a-z0-9]\w*|wifi|wi-fi|iwl\w*|ath\d+k\w*|rtw\w*|rtl8\w*|mt76\w*|broadcom|brcm\w*|b43\w*|cfg80211|mac80211|80211|networkmanager|wpa_supplicant)(?![a-z0-9])")
 # Netfilter/UFW log lines carry the interface name but are never driver evidence.
 FIREWALL_LOG_PATTERN=re.compile(r"\[UFW [A-Z ]+\]|\bIN=\S* OUT=\S*")
 KERNEL_LOG_SCAN_LINES=5000
+KERNEL_LOG_SCAN_CHARS=4_000_000   # ~5000 lines x 800 chars: the whole window reaches the filter
 
 def kernel_wifi_log(lines:int=100,boot:int=0,since_minutes:int|None=None,include_firewall:bool=False)->dict:
     _int_in(lines,1,500,"lines")
     if not isinstance(include_firewall,bool): raise ValueError("include_firewall must be a boolean")
     # Scan a bounded window, filter, then return at most `lines` matches (newest last).
-    result=run(["journalctl","-k","-n",str(KERNEL_LOG_SCAN_LINES),*journal_window(boot,since_minutes),"--no-pager","-o","short-iso"])
-    matched=[line for line in result["stdout"].splitlines()
+    result=run(["journalctl","-k","-n",str(KERNEL_LOG_SCAN_LINES),*journal_window(boot,since_minutes),"--no-pager","-o","short-iso"],
+               max_stdout=KERNEL_LOG_SCAN_CHARS)
+    scanned=result["stdout"].splitlines()
+    if result.get("truncated") and scanned: scanned=scanned[1:]   # drop the partial first line
+    matched=[line for line in scanned
              if WIFI_LOG_PATTERN.search(line.lower()) and (include_firewall or not FIREWALL_LOG_PATTERN.search(line))]
     return {"journalctl":{**result,"stdout":"\n".join(matched[-lines:]),"matched":len(matched),"returned":min(len(matched),lines)}}
 

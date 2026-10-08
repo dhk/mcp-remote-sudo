@@ -40,7 +40,7 @@ LOBSTER_KERNEL_LOG = "\n".join([
 
 
 def fake_journal(monkeypatch, stdout, seen=None):
-    def fake_run(argv,timeout=15):
+    def fake_run(argv,timeout=15,**kw):
         if seen is not None: seen.append(list(argv))
         return {"argv":list(argv),"returncode":0,"stdout":stdout,"stderr":""}
     monkeypatch.setattr(adapters,"run",fake_run)
@@ -71,3 +71,42 @@ def test_kernel_wifi_log_is_bounded(monkeypatch):
     for kwargs in ({"lines":501},{"lines":True},{"lines":10,"boot":1},{"lines":10,"include_firewall":"no"}):
         with pytest.raises(ValueError):
             adapters.kernel_wifi_log(**kwargs)
+
+
+def test_whole_window_reaches_the_filter_through_real_run(monkeypatch):
+    """Regression (review of #57): run() used to keep only the last 20000 chars, so a UFW flood after the driver
+    error pushed the evidence out before filtering."""
+    from types import SimpleNamespace
+    ufw=LOBSTER_KERNEL_LOG.splitlines()[0]
+    stdout="\n".join([LOBSTER_KERNEL_LOG.splitlines()[1]]+[ufw]*400)+"\n"   # ~55k chars of noise after the error
+    assert len(stdout)>20000
+    monkeypatch.setattr(adapters.subprocess,"run",lambda argv,**kw: SimpleNamespace(returncode=0,stdout=stdout,stderr=""))
+    out=adapters.kernel_wifi_log(10)["journalctl"]
+    assert out["stdout"]=="2026-09-30T02:41:24+00:00 lobster kernel: ERROR @wl_notify_scan_status : " and "truncated" not in out
+
+
+def test_truncated_window_drops_partial_first_line(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(adapters,"KERNEL_LOG_SCAN_CHARS",60)
+    stdout="x"*50+" wlp2s0 cut\n2026 kernel: wlp2s0 Scan_results error (-22)\n"
+    monkeypatch.setattr(adapters.subprocess,"run",lambda argv,**kw: SimpleNamespace(returncode=0,stdout=stdout,stderr=""))
+    out=adapters.kernel_wifi_log(10)["journalctl"]
+    assert out["truncated"] is True and out["stdout"]=="2026 kernel: wlp2s0 Scan_results error (-22)"
+
+
+@pytest.mark.parametrize("line", [
+    "kernel: iwlwifi 0000:00:14.3: Microcode SW error detected",
+    "kernel: wlo1: authenticate with 60:5f:8d:46:31:07",
+    "kernel: wlx001122334455: associated",
+    "kernel: wlan0: deauthenticating",
+    "kernel: ath10k_pci 0000:02:00.0: firmware crashed",
+    "kernel: rtw88_8822ce 0000:03:00.0: failed to send h2c",
+    "kernel: mt7921e 0000:04:00.0: mt76 message timeout",
+])
+def test_common_wifi_drivers_and_interface_names_match(line):
+    assert adapters.WIFI_LOG_PATTERN.search(line.lower())
+
+
+@pytest.mark.parametrize("line", ["kernel: owl driver unrelated", "kernel: bowling ball", "kernel: newly attached"])
+def test_unrelated_words_do_not_match(line):
+    assert not adapters.WIFI_LOG_PATTERN.search(line.lower())

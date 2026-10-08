@@ -113,7 +113,7 @@ receipts:
 For a bounded Wi-Fi investigation, a TaskAuthority can combine the existing read-only tools with three additional typed diagnostics:
 
 - `wifi.driver.status` — reports the running kernel, the requested module's loaded state, and `modinfo` for an explicitly allowlisted module such as `wl`.
-- `kernel.wifi.log` — returns at most 500 current-boot kernel journal lines, filtered to Wi-Fi/network-driver terms.
+- `kernel.wifi.log` — kernel journal lines filtered to Wi-Fi/driver terms (firewall drops excluded), at most `lines` (≤500) matches from a bounded window, with `matched`/`returned` counts. By default it reads the current boot only; `boot` (previous boots), `since_minutes` and `include_firewall` widen what it reads and are allowed **only if the grant constrains them explicitly** (the same applies to `journal.query`'s `boot`/`since_minutes`).
 - `network.probe` — runs a bounded ICMP probe to an explicitly allowlisted hostname or IP address, with 1–10 packets.
 
 For example:
@@ -129,6 +129,9 @@ allow:
       lines:
         minimum: 1
         maximum: 200
+      boot:            # optional: allow looking back up to 3 boots
+        minimum: -3
+        maximum: 0
   - tool: network.probe
     args:
       target:

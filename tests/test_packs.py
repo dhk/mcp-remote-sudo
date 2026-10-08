@@ -1,3 +1,4 @@
+import json
 import asyncio
 
 import pytest
@@ -94,3 +95,28 @@ def test_readme_example_manifest_resolves_against_installed_packs():
     readme=(Path(__file__).resolve().parents[1]/"README.md").read_text()
     block=next(b for b in re.findall(r"```yaml\n(.*?)```", readme, re.S) if "kind: TaskAuthority" in b)
     packs.default_registry().require(Authority(yaml.safe_load(block)).allowed_tools)
+
+
+def test_widening_arguments_require_an_explicit_grant_constraint(tmp_path, monkeypatch):
+    from mcp_remote_sudo import adapters
+    from mcp_remote_sudo.receipts import ReceiptWriter
+    from mcp_remote_sudo.server import Runtime
+    monkeypatch.setattr(adapters,"run",lambda argv,timeout=15,**kw: {"argv":list(argv),"returncode":0,"stdout":"","stderr":""})
+    def server_for(rule_args):
+        m={"apiVersion":"mcp-remote-sudo/v1","kind":"TaskAuthority","metadata":{"id":"g"},
+           "binding":{"agent":"a","session":"s","host":"h"},
+           "lifetime":{"notAfter":"2099-01-01T00:00:00Z","renewable":False,"expansion":"prohibited"},
+           "allow":[{"tool":"kernel.wifi.log",**({"args":rule_args} if rule_args else {})}]}
+        rt=Runtime(Authority(m),ReceiptWriter(tmp_path/"r.jsonl"),agent="a",session="s",host="h")
+        return build_server(rt)
+    legacy=server_for({"lines":{"maximum":200}})            # a manifest written before boot/include_firewall existed
+    asyncio.run(legacy.call_tool("kernel_wifi_log",{"lines":50}))  # defaults: still allowed
+    for widening in ({"boot":-1},{"include_firewall":True},{"since_minutes":60}):
+        with pytest.raises(Exception, match="unconstrained_argument"):
+            asyncio.run(legacy.call_tool("kernel_wifi_log",{"lines":50,**widening}))
+    pinned=server_for({"lines":{"maximum":200},"boot":{"minimum":-3,"maximum":0}})
+    asyncio.run(pinned.call_tool("kernel_wifi_log",{"lines":50,"boot":-1}))   # explicitly granted
+    with pytest.raises(Exception, match="arguments_not_allowed"):
+        asyncio.run(pinned.call_tool("kernel_wifi_log",{"lines":50,"boot":-4}))
+    rows=[json.loads(x) for x in (tmp_path/"r.jsonl").read_text().splitlines()]
+    assert [r["reason"] for r in rows if r["decision"]=="deny"][:3]==["unconstrained_argument:boot","unconstrained_argument:include_firewall","unconstrained_argument:since_minutes"]
