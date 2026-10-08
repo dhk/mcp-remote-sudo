@@ -112,7 +112,9 @@ receipts:
 
 For a bounded Wi-Fi investigation, a TaskAuthority can combine the existing read-only tools with three additional typed diagnostics:
 
-- `wifi.driver.status` — reports the running kernel, the requested module's loaded state, and `modinfo` for an explicitly allowlisted module such as `wl`.
+- `wifi.driver.status` — the running kernel and, from sysfs (works under `ProtectKernelModules=true`), an explicitly allowlisted module's `srcversion`/`taint`/`refcnt`/`initstate`, the drivers it registers, and the devices and interfaces bound to them.
+- `wifi.link` — the associated access point's device, BSSID, channel, frequency, rate and signal (no scan triggered).
+- `wifi.scan(rescan)` — visible networks; `rescan: true` forces a fresh scan and is allowed only if a grant rule constrains `rescan` (it also needs polkit permission for `org.freedesktop.NetworkManager.wifi.scan`, which sessionless services lack by default).
 - `kernel.wifi.log` — kernel journal lines filtered to Wi-Fi/driver terms (best-effort coverage of common Wi-Fi stacks and drivers; firewall drops excluded), at most `lines` (≤500) **matches** from a fixed window of the last 5000 kernel lines of the selected boot (previously `lines` bounded the unfiltered tail), with `matched`/`returned` counts. By default it reads the current boot only; `since_minutes` narrows that window. `boot` (previous boots) and `include_firewall` widen what it reads and are allowed **only if a grant rule constrains them explicitly**, so older grants keep their scope.
 - `network.probe` — runs a bounded ICMP probe to an explicitly allowlisted hostname or IP address, with 1–10 packets.
 

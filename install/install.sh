@@ -148,7 +148,7 @@ PY
   fi
   if ! have nmcli; then
     say "preflight: compatible_with_reduced_capabilities"
-    say "unavailable: wifi_status wifi_scan"
+    say "unavailable: wifi_status wifi_scan wifi_link"
   else
     say "preflight: compatible"
   fi

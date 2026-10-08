@@ -2,55 +2,81 @@ import pytest
 from mcp_remote_sudo import adapters
 
 
-def make_sysfs(root):
-    mod=root/"module"/"wl"; mod.mkdir(parents=True)
-    (mod/"version").write_text("6.30.223.271\n"); (mod/"srcversion").write_text("ABC123\n")
+def make_sysfs(root, module="wl", driver="wl", dev="0000:02:00.0", iface="wlp2s0", version=False):
+    mod=root/"module"/module; mod.mkdir(parents=True)
+    if version: (mod/"version").write_text("6.30.223.271\n")
+    (mod/"srcversion").write_text("F54AD80F25CC1257017C282\n")
     (mod/"taint").write_text("POE\n"); (mod/"refcnt").write_text("0\n"); (mod/"initstate").write_text("live\n")
-    drv=root/"bus"/"pci"/"drivers"/"wl"; drv.mkdir(parents=True)
-    dev=root/"devices"/"pci0000:00"/"0000:02:00.0"; dev.mkdir(parents=True)
-    (dev/"driver").symlink_to(drv)
-    (drv/"0000:02:00.0").symlink_to(dev); (drv/"bind").write_text(""); (drv/"module").mkdir()
-    net=root/"class"/"net"; net.mkdir(parents=True)
-    (net/"wlp2s0").mkdir(); (net/"wlp2s0"/"device").symlink_to(dev)
-    (net/"lo").mkdir()
+    drv=root/"bus"/"pci"/"drivers"/driver; drv.mkdir(parents=True)
+    (mod/"drivers").mkdir(); (mod/"drivers"/f"pci:{driver}").symlink_to(drv)
+    device=root/"devices"/"pci0000:00"/dev; device.mkdir(parents=True)
+    (device/"driver").symlink_to(drv)
+    (drv/dev).symlink_to(device); (drv/"module").symlink_to(mod)
+    for f in ("bind","unbind","new_id","remove_id","uevent"): (drv/f).write_text("")
+    net=root/"class"/"net"; net.mkdir(parents=True, exist_ok=True)
+    (net/iface).mkdir(); (net/iface/"device").symlink_to(device)
+    (net/"lo").mkdir(exist_ok=True)
+
+
+def fake_run_ok(monkeypatch, stdout="", calls=None):
+    def fake(argv,timeout=15,**kw):
+        if calls is not None: calls.append(list(argv))
+        return {"argv":list(argv),"returncode":0,"stdout":stdout,"stderr":""}
+    monkeypatch.setattr(adapters,"run",fake)
 
 
 def test_wifi_driver_status_reads_sysfs_not_modinfo(monkeypatch, tmp_path):
     make_sysfs(tmp_path); monkeypatch.setattr(adapters,"SYSFS",tmp_path)
-    calls=[]
-    monkeypatch.setattr(adapters,"run",lambda argv,timeout=15: calls.append(list(argv)) or {"argv":list(argv),"returncode":0,"stdout":"6.8.0-142-generic\n","stderr":""})
+    calls=[]; fake_run_ok(monkeypatch,"6.8.0-142-generic\n",calls)
     result=adapters.wifi_driver_status("wl")
     assert calls==[["uname","-r"]]
     assert result["loaded"] is True
-    assert result["module"]=={"version":"6.30.223.271","srcversion":"ABC123","taint":"POE","refcnt":"0","initstate":"live"}
-    assert result["pci_devices"]==["0000:02:00.0"] and result["interfaces"]==["wlp2s0"]
+    assert result["module"]=={"version":None,"srcversion":"F54AD80F25CC1257017C282","taint":"POE","refcnt":"0","initstate":"live"}
+    assert result["drivers"]==["pci:wl"] and result["devices"]==["0000:02:00.0"] and result["interfaces"]==["wlp2s0"]
+
+
+def test_driver_name_differing_from_module_and_dash_spelling(monkeypatch, tmp_path):
+    make_sysfs(tmp_path, module="rtw88_8822ce", driver="rtw_8822ce", dev="0000:03:00.0", iface="wlo1")
+    monkeypatch.setattr(adapters,"SYSFS",tmp_path); fake_run_ok(monkeypatch)
+    for spelling in ("rtw88_8822ce","rtw88-8822ce"):
+        result=adapters.wifi_driver_status(spelling)
+        assert result["loaded"] and result["drivers"]==["pci:rtw_8822ce"] and result["devices"]==["0000:03:00.0"] and result["interfaces"]==["wlo1"]
 
 
 def test_wifi_driver_status_absent_module_and_validation(monkeypatch, tmp_path):
-    monkeypatch.setattr(adapters,"SYSFS",tmp_path)
-    monkeypatch.setattr(adapters,"run",lambda argv,timeout=15: {"argv":list(argv),"returncode":0,"stdout":"","stderr":""})
+    monkeypatch.setattr(adapters,"SYSFS",tmp_path); fake_run_ok(monkeypatch)
     result=adapters.wifi_driver_status("b43")
-    assert result["loaded"] is False and result["module"]["version"] is None and result["interfaces"]==[]
-    for bad in ("wl;reboot","--help","-wl","../wl"):
+    assert result["loaded"] is False and result["module"]["srcversion"] is None and result["interfaces"]==[] and result["drivers"]==[]
+    for bad in ("wl;reboot","--help","-wl","../wl","wl/x"):
         with pytest.raises(ValueError):
             adapters.wifi_driver_status(bad)
 
 
-def test_wifi_scan_rescan_is_explicit(monkeypatch):
+def test_wifi_scan_rescan_is_explicit_and_explains_refusal(monkeypatch):
     calls=[]
-    monkeypatch.setattr(adapters,"run",lambda argv,timeout=15: calls.append(list(argv)) or {"argv":list(argv),"returncode":0,"stdout":"","stderr":""})
-    adapters.wifi_scan(); adapters.wifi_scan(rescan=True)
-    assert "--rescan" not in calls[0] and calls[1][-2:]==["--rescan","yes"]
+    def fake(argv,timeout=15,**kw):
+        calls.append(list(argv)); refused="--rescan" in argv
+        return {"argv":list(argv),"returncode":10 if refused else 0,"stdout":"","stderr":"Error: not authorized" if refused else ""}
+    monkeypatch.setattr(adapters,"run",fake)
+    assert "hint" not in adapters.wifi_scan()["nmcli"]
+    out=adapters.wifi_scan(rescan=True)["nmcli"]
+    assert calls[1][-2:]==["--rescan","yes"] and "org.freedesktop.NetworkManager.wifi.scan" in out["hint"]
     with pytest.raises(ValueError):
         adapters.wifi_scan(rescan="yes")
 
 
-def test_wifi_link_reports_only_the_associated_ap(monkeypatch):
-    out="*:wlp2s0:DHKs Network:60\\:5F\\:8D\\:46\\:31\\:07:149:5745 MHz:270 Mbit/s:100:WPA2\n :wlp2s0:DHKs Network:60\\:5F\\:8D\\:46\\:31\\:06:11:2462 MHz:130 Mbit/s:100:WPA2\n"
-    monkeypatch.setattr(adapters,"run",lambda argv,timeout=15: {"argv":list(argv),"returncode":0,"stdout":out,"stderr":""})
+def test_wifi_link_reports_only_the_associated_ap_without_ssids(monkeypatch):
+    out="*:wlp2s0:60\\:5F\\:8D\\:46\\:31\\:07:149:5745 MHz:270 Mbit/s:100:WPA2\n :wlp2s0:60\\:5F\\:8D\\:46\\:31\\:06:11:2462 MHz:130 Mbit/s:100:WPA2\n"
+    calls=[]; fake_run_ok(monkeypatch,out,calls)
     result=adapters.wifi_link()
     assert result["associated"] is True and result["nmcli"]["stdout"].count("\n")==0 and ":149:5745 MHz:" in result["nmcli"]["stdout"]
-    assert result["nmcli"]["argv"][-2:]==["--rescan","no"]
+    assert calls[0][3]=="IN-USE,DEVICE,BSSID,CHAN,FREQ,RATE,SIGNAL,SECURITY" and "SSID" not in calls[0][3].split(",")
+    assert calls[0][-2:]==["--rescan","no"] and calls[1][-2:]==["device","status"]
+
+
+def test_wifi_link_truncated_output_is_not_reported_as_associated(monkeypatch):
+    monkeypatch.setattr(adapters,"run",lambda argv,timeout=15,**kw: {"argv":list(argv),"returncode":0,"stdout":"*:wlp2s0:x\n","stderr":"","truncated":True})
+    assert adapters.wifi_link()["associated"] is False
 
 
 def test_connectivity_probe_is_bounded_and_argv_only(monkeypatch):
