@@ -24,7 +24,7 @@ def wifi_scan(rescan:bool=False)->dict:
     if rescan and result["returncode"]!=0:
         # NetworkManager's org.freedesktop.NetworkManager.wifi.scan polkit action is auth_admin for sessionless
         # callers by default, so the unprivileged service needs an explicit polkit rule to force a scan.
-        result["hint"]="forced rescan refused; the service user may need polkit permission for org.freedesktop.NetworkManager.wifi.scan"
+        result["hint"]="forced rescan refused; reinstall with MCP_REMOTE_SUDO_WIFI_RESCAN=1 to allow org.freedesktop.NetworkManager.wifi.scan for the service user"
     return {"nmcli":result}
 
 def wifi_link()->dict:

@@ -39,9 +39,17 @@ grep -Fq 'chmod 0755 "$PREFIX/src/install/bootstrap.sh" "$PREFIX/src/install/ins
 wrapper="$(sed -n '/^cat >"\$ADMIN_WRAPPER.tmp" <<EOF$/,/^EOF$/p' "$INSTALL")"
 grep -qxF 'exec $PREFIX/venv/bin/python -I -m mcp_remote_sudo.admin "\$@"' <<<"$wrapper" || { echo "FAIL: admin wrapper must exec python -I -m mcp_remote_sudo.admin"; exit 1; }
 grep -qF 'chown root:root "$ADMIN_WRAPPER.tmp"; chmod 0755 "$ADMIN_WRAPPER.tmp"' "$INSTALL"
-grep -qx 'rm -f /usr/local/sbin/mcp-remote-sudo-admin' "$UNINSTALL"
+grep -qx 'rm -f /usr/local/sbin/mcp-remote-sudo-admin /etc/polkit-1/rules.d/60-mcp-remote-sudo-wifi-scan.rules' "$UNINSTALL"
 # The isolated wrapper is the only admin launcher: no non-isolated console script.
 refute grep -q '^mcp-remote-sudo-admin *=' "$ROOT/pyproject.toml"
+
+# Opt-in polkit rule (#59): exactly the wifi.scan action, exactly the service user, only when asked for.
+rule="$(sed -n '/^    cat >"\$POLKIT_RULE.tmp" <<EOF$/,/^EOF$/p' "$INSTALL")"
+grep -qF 'action.id == "org.freedesktop.NetworkManager.wifi.scan" && subject.user == "$SERVICE_USER"' <<<"$rule" || { echo "FAIL: polkit rule scope"; exit 1; }
+expect_eq "$(grep -c 'action.id' <<<"$rule")" "1"
+refute grep -Eq 'subject\.isInGroup|action\.id\.indexOf|polkit\.Result\.YES;[^}]*polkit\.Result\.YES' <<<"$rule"
+grep -qx '  1)' "$INSTALL" && grep -qF 'case "${MCP_REMOTE_SUDO_WIFI_RESCAN:-}" in' "$INSTALL"
+grep -qx 'wifi_rescan: $WIFI_RESCAN_STATUS' "$INSTALL"
 
 # Source-level safety assertions for the bootstrap script.
 refute grep -Eq '0\.0\.0\.0|NOPASSWD: *ALL|chmod +777|shell=True' "$INSTALL"
