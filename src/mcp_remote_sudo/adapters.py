@@ -7,7 +7,6 @@ from typing import Sequence
 UNIT=re.compile(r"^[A-Za-z0-9_.@:-]+$")
 MODULE=re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 TARGET=re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,252}$")
-WIFI_LOG_TERMS=("wl","wlp","wlan","wifi","wi-fi","broadcom","cfg80211","80211","networkmanager")
 
 def run(argv: Sequence[str], timeout: int=15)->dict:
     p=subprocess.run(list(argv),capture_output=True,text=True,timeout=timeout,check=False)
@@ -32,15 +31,20 @@ def connectivity_probe(target:str,count:int=4)->dict:
         raise ValueError("count must be between 1 and 10")
     return {"ping":run(["ping","-n","-c",str(count),"--",target],timeout=min(15, count*2+3))}
 
-def kernel_wifi_log(lines:int=100)->dict:
-    if not isinstance(lines,int) or isinstance(lines,bool) or lines<1 or lines>500:
-        raise ValueError("lines must be between 1 and 500")
-    result=run(["journalctl","-k","-b","-n",str(lines),"--no-pager","-o","short-iso"])
-    filtered="\n".join(
-        line for line in result["stdout"].splitlines()
-        if any(term in line.lower() for term in WIFI_LOG_TERMS)
-    )
-    return {"journalctl":{**result,"stdout":filtered}}
+# Driver/stack terms matched on token boundaries ("wl" must not match inside "owl" or "IN=wlp2s0"-only noise).
+WIFI_LOG_PATTERN=re.compile(r"(?<![a-z0-9])(?:wl|wlp\w*|wlan\d*|wifi|wi-fi|broadcom|brcm\w*|b43\w*|cfg80211|mac80211|80211|networkmanager|wpa_supplicant)(?![a-z0-9])")
+# Netfilter/UFW log lines carry the interface name but are never driver evidence.
+FIREWALL_LOG_PATTERN=re.compile(r"\[UFW [A-Z ]+\]|\bIN=\S* OUT=\S*")
+KERNEL_LOG_SCAN_LINES=5000
+
+def kernel_wifi_log(lines:int=100,boot:int=0,since_minutes:int|None=None,include_firewall:bool=False)->dict:
+    _int_in(lines,1,500,"lines")
+    if not isinstance(include_firewall,bool): raise ValueError("include_firewall must be a boolean")
+    # Scan a bounded window, filter, then return at most `lines` matches (newest last).
+    result=run(["journalctl","-k","-n",str(KERNEL_LOG_SCAN_LINES),*journal_window(boot,since_minutes),"--no-pager","-o","short-iso"])
+    matched=[line for line in result["stdout"].splitlines()
+             if WIFI_LOG_PATTERN.search(line.lower()) and (include_firewall or not FIREWALL_LOG_PATTERN.search(line))]
+    return {"journalctl":{**result,"stdout":"\n".join(matched[-lines:]),"matched":len(matched),"returned":min(len(matched),lines)}}
 
 def systemd_status(unit:str)->dict:
     if not UNIT.fullmatch(unit): raise ValueError("invalid systemd unit")

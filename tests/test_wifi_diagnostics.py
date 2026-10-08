@@ -28,17 +28,46 @@ def test_connectivity_probe_is_bounded_and_argv_only(monkeypatch):
         adapters.connectivity_probe("1.1.1.1",True)
 
 
-def test_kernel_wifi_log_is_bounded_and_filtered(monkeypatch):
-    output="unrelated kernel line\nwl: scan status failed\nNetworkManager: device changed\n"
+LOBSTER_KERNEL_LOG = "\n".join([
+    "2026-09-30T02:41:20+00:00 lobster kernel: [UFW BLOCK] IN=wlp2s0 OUT= MAC=01:00:5e:00:00:fb SRC=192.168.7.53 DST=224.0.0.251 LEN=32 PROTO=2",
+    "2026-09-30T02:41:24+00:00 lobster kernel: ERROR @wl_notify_scan_status : ",
+    "2026-09-30T02:41:24+00:00 lobster kernel: wlp2s0 Scan_results error (-22)",
+    "2026-09-30T02:41:30+00:00 lobster kernel: [UFW BLOCK] IN=wlp2s0 OUT= MAC=88:53:95:2c:d7:ad SRC=192.168.7.194 DST=192.168.7.86 PROTO=UDP",
+    "2026-09-30T02:41:31+00:00 lobster kernel: owl driver unrelated",
+    "2026-09-30T02:41:32+00:00 lobster kernel: perf: interrupt took too long",
+    "2026-09-30T02:41:33+00:00 lobster kernel: cfg80211: Loading compiled-in X.509 certificates",
+])
+
+
+def fake_journal(monkeypatch, stdout, seen=None):
     def fake_run(argv,timeout=15):
-        assert list(argv)==["journalctl","-k","-b","-n","100","--no-pager","-o","short-iso"]
-        return {"argv":list(argv),"returncode":0,"stdout":output,"stderr":""}
+        if seen is not None: seen.append(list(argv))
+        return {"argv":list(argv),"returncode":0,"stdout":stdout,"stderr":""}
     monkeypatch.setattr(adapters,"run",fake_run)
-    result=adapters.kernel_wifi_log(100)["journalctl"]["stdout"]
-    assert "wl: scan status failed" in result
-    assert "NetworkManager: device changed" in result
-    assert "unrelated kernel line" not in result
-    with pytest.raises(ValueError):
-        adapters.kernel_wifi_log(501)
-    with pytest.raises(ValueError):
-        adapters.kernel_wifi_log(True)
+
+
+def test_kernel_wifi_log_excludes_firewall_noise_and_substring_matches(monkeypatch):
+    seen=[]; fake_journal(monkeypatch, LOBSTER_KERNEL_LOG, seen)
+    out=adapters.kernel_wifi_log(100)["journalctl"]
+    assert out["stdout"].splitlines()==[LOBSTER_KERNEL_LOG.splitlines()[i] for i in (1,2,6)]
+    assert out["matched"]==3 and out["returned"]==3
+    assert seen==[["journalctl","-k","-n","5000","-b","0","--no-pager","-o","short-iso"]]
+
+
+def test_kernel_wifi_log_can_include_firewall_lines(monkeypatch):
+    fake_journal(monkeypatch, LOBSTER_KERNEL_LOG)
+    assert adapters.kernel_wifi_log(100,include_firewall=True)["journalctl"]["matched"]==5
+
+
+def test_kernel_wifi_log_limits_after_filtering_and_selects_boot(monkeypatch):
+    seen=[]; fake_journal(monkeypatch, LOBSTER_KERNEL_LOG, seen)
+    out=adapters.kernel_wifi_log(1,boot=-1)["journalctl"]
+    assert out["stdout"].endswith("cfg80211: Loading compiled-in X.509 certificates") and out["matched"]==3
+    assert seen[0][4:6]==["-b","-1"]
+
+
+def test_kernel_wifi_log_is_bounded(monkeypatch):
+    fake_journal(monkeypatch, "")
+    for kwargs in ({"lines":501},{"lines":True},{"lines":10,"boot":1},{"lines":10,"include_firewall":"no"}):
+        with pytest.raises(ValueError):
+            adapters.kernel_wifi_log(**kwargs)
