@@ -189,6 +189,7 @@ BACKUP existing $MANIFEST to $MANIFEST.bak-<timestamp> (if present)
 INSTALL baseline authority: $MANIFEST
 GRANT journal read via systemd-journal group when present
 INSTALL operator command: /usr/local/sbin/mcp-remote-sudo-admin (isolated python -I)
+INSTALL privileged helper: $SERVICE-helper.socket (0660 root:$SERVICE_USER, typed operations only, no capabilities)
 ENABLE and START: $SERVICE.service
 CONFIGURE ICMP echo sockets for group $SERVICE_USER only: $SYSCTL_DROPIN (skip with MCP_REMOTE_SUDO_ICMP=0)
 GRANT polkit org.freedesktop.NetworkManager.wifi.scan to $SERVICE_USER only: $POLKIT_RULE (only with MCP_REMOTE_SUDO_WIFI_RESCAN=1; =0 removes; unset unchanged)
@@ -363,8 +364,55 @@ exec $PREFIX/venv/bin/python -I -m mcp_remote_sudo.admin "\$@"
 EOF
 chown root:root "$ADMIN_WRAPPER.tmp"; chmod 0755 "$ADMIN_WRAPPER.tmp"; mv -f "$ADMIN_WRAPPER.tmp" "$ADMIN_WRAPPER"
 
+# Root-owned privileged helper (#41): socket-activated, reachable only by the service group (0660) and
+# accepted only from the service uid (SO_PEERCRED). It executes typed operations from its own compiled-in
+# table after re-checking the active authority; it holds no capabilities until a mutation pack needs them.
+HELPER_LOG_DIR="/var/log/mcp-remote-sudo-helper"
+install -d -o root -g root -m 0750 "$HELPER_LOG_DIR"
+cat >"/etc/systemd/system/$SERVICE-helper.socket" <<EOF
+[Unit]
+Description=mcp-remote-sudo privileged helper socket
+
+[Socket]
+ListenStream=/run/mcp-remote-sudo/helper.sock
+SocketUser=root
+SocketGroup=$SERVICE_USER
+SocketMode=0660
+DirectoryMode=0755
+Accept=no
+
+[Install]
+WantedBy=sockets.target
+EOF
+cat >"/etc/systemd/system/$SERVICE-helper.service" <<EOF
+[Unit]
+Description=mcp-remote-sudo privileged helper (typed operations only)
+Requires=$SERVICE-helper.socket
+
+[Service]
+Type=simple
+User=root
+ExecStart=$PREFIX/venv/bin/python -I -m mcp_remote_sudo.helper --manifest $MANIFEST --receipts $HELPER_LOG_DIR/receipts.jsonl --service-user $SERVICE_USER
+NoNewPrivileges=true
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+ReadWritePaths=$HELPER_LOG_DIR
+EOF
+
 systemctl daemon-reload
 systemctl enable "$SERVICE.service"
+systemctl enable --now "$SERVICE-helper.socket"
 systemctl restart "$SERVICE.service"
 
 # Require the service to remain healthy through a short stabilization window.

@@ -17,11 +17,11 @@ refute(){ if "$@"; then echo "FAIL: expected failure, but succeeded: $*"; exit 1
 # destructive account/log/config removal belongs only to --purge.
 grep -q 'if \$PURGE; then' "$UNINSTALL"
 purge_block="$(sed -n '/if \$PURGE; then/,/^else$/p' "$UNINSTALL")"
-grep -q 'rm -rf /etc/mcp-remote-sudo /var/log/mcp-remote-sudo' <<<"$purge_block"
+grep -q 'rm -rf /etc/mcp-remote-sudo /var/log/mcp-remote-sudo /var/log/mcp-remote-sudo-helper' <<<"$purge_block"
 grep -q 'userdel mcp-remote-sudo' <<<"$purge_block"
 normal_block="$(sed -n '/^else$/,/^fi$/p' "$UNINSTALL")"
 refute grep -q 'userdel mcp-remote-sudo' <<<"$normal_block"
-grep -q 'preserved: /etc/mcp-remote-sudo /var/log/mcp-remote-sudo and service user' "$UNINSTALL"
+grep -q 'preserved: /etc/mcp-remote-sudo /var/log/mcp-remote-sudo /var/log/mcp-remote-sudo-helper and service user' "$UNINSTALL"
 
 out="$(bash "$INSTALL" --plan || true)"
 grep -q '^BOOTSTRAP_PLAN$' <<<"$out"
@@ -61,6 +61,25 @@ grep -q 'reason: invalid_MCP_REMOTE_SUDO_WIFI_RESCAN' <<<"$out"
 refute grep -q '^BOOTSTRAP_PLAN$' <<<"$out"
 grep -qF '[[ -d /etc/polkit-1/rules.d ]] || install -d' "$INSTALL"
 grep -qx 'wifi_rescan: $WIFI_RESCAN_STATUS' "$INSTALL"
+
+# Privileged helper (#41): socket reachable only by the service group, no capabilities, Unix sockets only,
+# receipts in a root-owned directory the service user cannot unlink from, and removed on uninstall.
+helper_unit="$(sed -n '/mcp-remote-sudo-helper.service" <<EOF/,/^EOF$/p' "$INSTALL")"
+helper_socket="$(sed -n '/mcp-remote-sudo-helper.socket" <<EOF/,/^EOF$/p' "$INSTALL")"
+[[ -z "$helper_unit" ]] && helper_unit="$(sed -n '/\$SERVICE-helper.service" <<EOF/,/^EOF$/p' "$INSTALL")"
+[[ -z "$helper_socket" ]] && helper_socket="$(sed -n '/\$SERVICE-helper.socket" <<EOF/,/^EOF$/p' "$INSTALL")"
+for line in 'SocketMode=0660' 'SocketGroup=$SERVICE_USER' 'SocketUser=root' 'ListenStream=/run/mcp-remote-sudo/helper.sock'; do
+  grep -qxF "$line" <<<"$helper_socket" || { echo "FAIL: helper socket missing $line"; exit 1; }
+done
+for line in 'CapabilityBoundingSet=' 'NoNewPrivileges=true' 'RestrictAddressFamilies=AF_UNIX' 'IPAddressDeny=any' 'ProtectSystem=strict' 'ReadWritePaths=$HELPER_LOG_DIR'; do
+  grep -qxF "$line" <<<"$helper_unit" || { echo "FAIL: helper unit missing $line"; exit 1; }
+done
+refute grep -q 'AmbientCapabilities' <<<"$helper_unit"
+# The helper runs as root: isolated interpreter, never a console script that honours PYTHONPATH.
+grep -qF 'ExecStart=$PREFIX/venv/bin/python -I -m mcp_remote_sudo.helper ' <<<"$helper_unit" || { echo 'FAIL: helper must run python -I -m'; exit 1; }
+grep -qF 'install -d -o root -g root -m 0750 "$HELPER_LOG_DIR"' "$INSTALL"
+grep -qF 'systemctl enable --now "$SERVICE-helper.socket"' "$INSTALL"
+grep -qF 'mcp-remote-sudo-helper.socket mcp-remote-sudo-helper.service' "$UNINSTALL"
 
 # Source-level safety assertions for the bootstrap script.
 refute grep -Eq '0\.0\.0\.0|NOPASSWD: *ALL|chmod +777|shell=True' "$INSTALL"

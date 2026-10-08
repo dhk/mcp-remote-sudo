@@ -8,8 +8,10 @@ SYSCTL_DROPIN="/etc/sysctl.d/60-mcp-remote-sudo-ping.conf"
 SERVICE_GID="$(getent group mcp-remote-sudo | cut -d: -f3 || true)"
 
 systemctl disable --now mcp-remote-sudo.service 2>/dev/null || true
+systemctl disable --now mcp-remote-sudo-helper.socket mcp-remote-sudo-helper.service 2>/dev/null || true
 rm -f /usr/local/sbin/mcp-remote-sudo-admin /etc/polkit-1/rules.d/60-mcp-remote-sudo-wifi-scan.rules
-rm -f /etc/systemd/system/mcp-remote-sudo.service
+rm -f /etc/systemd/system/mcp-remote-sudo.service \
+      /etc/systemd/system/mcp-remote-sudo-helper.socket /etc/systemd/system/mcp-remote-sudo-helper.service
 systemctl daemon-reload
 rm -rf /opt/mcp-remote-sudo
 rm -rf /var/lib/mcp-remote-sudo
@@ -33,10 +35,10 @@ if [[ -f "$SYSCTL_DROPIN" ]]; then
 fi
 
 if $PURGE; then
-  rm -rf /etc/mcp-remote-sudo /var/log/mcp-remote-sudo
+  rm -rf /etc/mcp-remote-sudo /var/log/mcp-remote-sudo /var/log/mcp-remote-sudo-helper
   if getent passwd mcp-remote-sudo >/dev/null; then userdel mcp-remote-sudo || true; fi
   echo "purged configuration, receipts, and service user"
 else
-  echo "preserved: /etc/mcp-remote-sudo /var/log/mcp-remote-sudo and service user"
+  echo "preserved: /etc/mcp-remote-sudo /var/log/mcp-remote-sudo /var/log/mcp-remote-sudo-helper and service user"
 fi
 echo "mcp-remote-sudo uninstalled"
