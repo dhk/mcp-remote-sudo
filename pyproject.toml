@@ -17,7 +17,6 @@ dev = ["pytest>=8.0"]
 
 [project.scripts]
 mcp-remote-sudo = "mcp_remote_sudo.server:main"
-mcp-remote-sudo-admin = "mcp_remote_sudo.admin:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

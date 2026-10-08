@@ -406,7 +406,8 @@ class Admin:
 
 def main(argv: Sequence[str] | None = None) -> int:
     if os.geteuid() == 0 and not sys.flags.isolated:
-        # As root, environment-controlled import paths (PYTHONPATH, user site) could pull in pack or other code.
+        # Tripwire, not a boundary: by the time main() runs, a hostile PYTHONPATH/sitecustomize has already executed.
+        # The boundary is the installed wrapper (python -I) being the only launcher; this rejects misuse loudly.
         print("error: run as /usr/local/sbin/mcp-remote-sudo-admin (isolated interpreter: python -I); "
               "refusing to run as root without isolated mode", file=sys.stderr)
         return 2

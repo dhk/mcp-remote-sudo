@@ -40,6 +40,8 @@ wrapper="$(sed -n '/^cat >"\$ADMIN_WRAPPER.tmp" <<EOF$/,/^EOF$/p' "$INSTALL")"
 grep -qxF 'exec $PREFIX/venv/bin/python -I -m mcp_remote_sudo.admin "\$@"' <<<"$wrapper" || { echo "FAIL: admin wrapper must exec python -I -m mcp_remote_sudo.admin"; exit 1; }
 grep -qF 'chown root:root "$ADMIN_WRAPPER.tmp"; chmod 0755 "$ADMIN_WRAPPER.tmp"' "$INSTALL"
 grep -qx 'rm -f /usr/local/sbin/mcp-remote-sudo-admin' "$UNINSTALL"
+# The isolated wrapper is the only admin launcher: no non-isolated console script.
+refute grep -q '^mcp-remote-sudo-admin *=' "$ROOT/pyproject.toml"
 
 # Source-level safety assertions for the bootstrap script.
 refute grep -Eq '0\.0\.0\.0|NOPASSWD: *ALL|chmod +777|shell=True' "$INSTALL"

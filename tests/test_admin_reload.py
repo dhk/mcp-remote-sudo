@@ -311,7 +311,6 @@ def test_main_applies_a_sighup_queued_during_startup(tmp_path, monkeypatch):
 
 
 def test_admin_refuses_root_without_isolated_mode(monkeypatch, capsys):
-    import sys as _sys
     monkeypatch.setattr(admin_mod.os, "geteuid", lambda: 0)
     class Flags: isolated = 0
     monkeypatch.setattr(admin_mod.sys, "flags", Flags)
