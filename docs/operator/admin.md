@@ -2,8 +2,12 @@
 
 The operator, not the agent, changes authority. Run these commands on the host, with sudo:
 
+Always use the installed wrapper. It's the only launcher, and it runs the admin in an isolated interpreter
+(`python -I`), so `PYTHONPATH`, `sitecustomize` and the user site can't inject code into a root process. Running the
+module another way as root is refused, but treat that refusal as a misuse check rather than a security boundary.
+
 ```bash
-A=/opt/mcp-remote-sudo/venv/bin/mcp-remote-sudo-admin
+A=/usr/local/sbin/mcp-remote-sudo-admin   # installed wrapper: runs the admin with python -I
 sudo $A status                       # active authority, what the service has loaded, service state
 sudo $A validate wifi-diag.yaml      # schema, expiry, operations
 sudo $A diff wifi-diag.yaml          # unified diff against the active authority, plus operations added and removed

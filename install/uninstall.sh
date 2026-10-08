@@ -8,6 +8,7 @@ SYSCTL_DROPIN="/etc/sysctl.d/60-mcp-remote-sudo-ping.conf"
 SERVICE_GID="$(getent group mcp-remote-sudo | cut -d: -f3 || true)"
 
 systemctl disable --now mcp-remote-sudo.service 2>/dev/null || true
+rm -f /usr/local/sbin/mcp-remote-sudo-admin
 rm -f /etc/systemd/system/mcp-remote-sudo.service
 systemctl daemon-reload
 rm -rf /opt/mcp-remote-sudo
