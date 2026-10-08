@@ -9,7 +9,7 @@ from mcp_remote_sudo.packs import Operation, PackError, Param, Registry, TaskPac
 from mcp_remote_sudo.server import build_server
 
 BUILTIN = {"system.info","network.status","systemd.status","journal.query","journal.boots",
-           "wifi.status","wifi.scan","wifi.driver.status","kernel.wifi.log","network.probe"}
+           "wifi.status","wifi.scan","wifi.link","wifi.driver.status","kernel.wifi.log","network.probe"}
 
 
 class RecordingRuntime:
@@ -140,3 +140,13 @@ def test_journal_query_window_args_are_not_gated():
     ops=packs.default_registry().operations
     assert not any(p.gated for p in ops["journal.query"].params)
     assert [p.name for p in ops["kernel.wifi.log"].params if p.gated]==["boot","include_firewall"]
+
+
+def test_forced_rescan_requires_an_explicit_grant():
+    assert [p.name for p in packs.default_registry().operations["wifi.scan"].params if p.gated]==["rescan"]
+    a=Authority({"apiVersion":"mcp-remote-sudo/v1","kind":"TaskAuthority","metadata":{"id":"g"},
+        "binding":{"agent":"a","session":"s","host":"h"},
+        "lifetime":{"notAfter":"2099-01-01T00:00:00Z","renewable":False,"expansion":"prohibited"},
+        "allow":[{"tool":"wifi.scan"}]})
+    assert a.evaluate("wifi.scan",{"rescan":False}).allowed
+    assert a.evaluate("wifi.scan",{"rescan":True},gated=("rescan",)).reason=="unconstrained_argument:rescan"

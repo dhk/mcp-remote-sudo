@@ -17,14 +17,49 @@ def run(argv: Sequence[str], timeout: int=15, max_stdout: int=20000)->dict:
 def system_info()->dict: return {"uname":run(["uname","-a"]),"os_release":run(["cat","/etc/os-release"])}
 def network_status()->dict: return {"ip":run(["ip","-json","address"]),"routes":run(["ip","-json","route"])}
 def wifi_status()->dict: return {"nmcli":run(["nmcli","-t","-f","DEVICE,TYPE,STATE,CONNECTION","device","status"])}
-def wifi_scan()->dict: return {"nmcli":run(["nmcli","-t","-f","SSID,BSSID,SIGNAL,SECURITY","device","wifi","list"])}
+def wifi_scan(rescan:bool=False)->dict:
+    """Visible networks. rescan=True forces a fresh scan (proves results are not cached); default lets NetworkManager decide."""
+    if not isinstance(rescan,bool): raise ValueError("rescan must be a boolean")
+    result=run(["nmcli","-t","-f","SSID,BSSID,CHAN,FREQ,SIGNAL,SECURITY","device","wifi","list",*(["--rescan","yes"] if rescan else [])],timeout=30)
+    if rescan and result["returncode"]!=0:
+        # NetworkManager's org.freedesktop.NetworkManager.wifi.scan polkit action is auth_admin for sessionless
+        # callers by default, so the unprivileged service needs an explicit polkit rule to force a scan.
+        result["hint"]="forced rescan refused; the service user may need polkit permission for org.freedesktop.NetworkManager.wifi.scan"
+    return {"nmcli":result}
+
+def wifi_link()->dict:
+    """The associated access point: device, BSSID, channel, frequency, rate, signal. Never triggers a scan.
+    SSIDs are deliberately not requested: they are attacker-controlled text and could forge an "in use" row."""
+    result=run(["nmcli","-t","-f","IN-USE,DEVICE,BSSID,CHAN,FREQ,RATE,SIGNAL,SECURITY","device","wifi","list","--rescan","no"],max_stdout=200000)
+    active=[line for line in result["stdout"].splitlines() if line.startswith("*:")]
+    connections=run(["nmcli","-t","-f","DEVICE,TYPE,STATE,CONNECTION","device","status"])
+    return {"nmcli":{**result,"stdout":"\n".join(active)},"devices":connections,
+            "associated":bool(active) and not result.get("truncated")}
+
+SYSFS=Path("/sys")
+
+def _read_sysfs(path:Path)->str|None:
+    try: return path.read_text().strip()
+    except OSError: return None
 
 def wifi_driver_status(module:str)->dict:
+    """Module state from sysfs. modinfo is not used: ProtectKernelModules= hides /usr/lib/modules from the service.
+    Drivers are found from the module's side (/sys/module/<m>/drivers/<bus>:<driver>), because a module's driver
+    name can differ from the module name (rtw88_8822ce registers rtw_8822ce)."""
     if not MODULE.fullmatch(module): raise ValueError("invalid kernel module")
+    name=module.replace("-","_")   # the kernel normalizes module names to underscores in /sys/module
+    mod=SYSFS/"module"/name
+    drivers=sorted({d.resolve() for d in (mod/"drivers").glob("*") if ":" in d.name and d.is_symlink()})
+    devices=sorted({e.name for drv in drivers for e in drv.iterdir() if e.is_symlink() and e.name!="module"}) if drivers else []
+    interfaces=sorted(n.name for n in (SYSFS/"class"/"net").glob("*") if (n/"device"/"driver").is_symlink()
+                      and (n/"device"/"driver").resolve() in drivers)
     return {
         "kernel":run(["uname","-r"]),
-        "loaded":(Path("/sys/module") / module).is_dir(),
-        "modinfo":run(["modinfo","--",module]),
+        "loaded":mod.is_dir(),
+        "module":{k:_read_sysfs(mod/k) for k in ("version","srcversion","taint","refcnt","initstate")},
+        "drivers":[f"{d.parent.parent.name}:{d.name}" for d in drivers],
+        "devices":devices,
+        "interfaces":interfaces,
     }
 
 def connectivity_probe(target:str,count:int=4)->dict:
