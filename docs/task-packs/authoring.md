@@ -74,4 +74,6 @@ The operator installs the distribution into the service's virtualenv. This becom
 `mcp-remote-sudo-admin pack install` in #38. A grant then authorizes the specific operations.
 
 The built-in packs are `core` (`system.info`, `network.status`, `systemd.status`, `journal.query`, `journal.boots`, `receipts.tail`, `authority.propose`) and `wifi`
-(`wifi.status`, `wifi.scan`, `wifi.link`, `wifi.driver.status`, `kernel.wifi.log`, `network.probe`).
+(`wifi.status`, `wifi.scan`, `wifi.link`, `wifi.driver.status`, `kernel.wifi.log`, `network.probe`), plus the mutating
+`wifi-remediate` pack (`wifi.radio.set`, `service.restart`, `kernel.module.reload`), which runs through the privileged
+helper.

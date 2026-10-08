@@ -81,8 +81,8 @@ def test_operation_failure_reports_class_only(helper):
     assert json.loads((tmp / "helper.jsonl").read_text().splitlines()[-1])["result"] == "failed"
 
 
-def test_builtin_table_is_minimal():
-    assert set(helper_mod.OPERATIONS) == {"helper.ping"}
+def test_builtin_table_contents():
+    assert set(helper_mod.OPERATIONS) == {"helper.ping","wifi.radio.set","service.restart","kernel.module.reload"}
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="SO_PEERCRED is Linux-only")
