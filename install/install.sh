@@ -15,6 +15,8 @@ PROC_ROOT="/proc"
 DEFAULT_PORT=8765
 TTL_HOURS="${MCP_REMOTE_SUDO_TTL_HOURS:-24}"
 ICMP="${MCP_REMOTE_SUDO_ICMP:-1}"
+WIFI_RESCAN="${MCP_REMOTE_SUDO_WIFI_RESCAN:-}"
+POLKIT_RULE="/etc/polkit-1/rules.d/60-mcp-remote-sudo-wifi-scan.rules"
 MODE="${1:-install}"
 
 say(){ printf '%s\n' "$*"; }
@@ -23,6 +25,9 @@ fail(){
   exit 1
 }
 have(){ command -v "$1" >/dev/null 2>&1; }
+
+# Validate opt-ins before anything is planned or changed (no half-installed state on a typo).
+case "$WIFI_RESCAN" in ""|0|1) ;; *) fail "invalid_MCP_REMOTE_SUDO_WIFI_RESCAN" ;; esac
 
 # Port selection precedence: explicit MCP_REMOTE_SUDO_PORT, then the port the
 # existing unit already uses (a reinstall must not silently move the service),
@@ -186,6 +191,7 @@ GRANT journal read via systemd-journal group when present
 INSTALL operator command: /usr/local/sbin/mcp-remote-sudo-admin (isolated python -I)
 ENABLE and START: $SERVICE.service
 CONFIGURE ICMP echo sockets for group $SERVICE_USER only: $SYSCTL_DROPIN (skip with MCP_REMOTE_SUDO_ICMP=0)
+GRANT polkit org.freedesktop.NetworkManager.wifi.scan to $SERVICE_USER only: $POLKIT_RULE (only with MCP_REMOTE_SUDO_WIFI_RESCAN=1; =0 removes; unset unchanged)
 LISTEN: 127.0.0.1:$PORT only (port source: $PORT_SOURCE)
 RUNTIME_PRIVILEGED_MUTATION: disabled
 EOF
@@ -320,6 +326,33 @@ elif [[ "$ICMP_STATUS" == disabled ]]; then
   remove_ping_dropin "$SERVICE_GID" || fail "icmp_sysctl_failed"
 fi
 
+# Forced Wi-Fi rescans (#59, opt-in): NetworkManager's wifi.scan polkit action is auth_admin for sessionless callers.
+# MCP_REMOTE_SUDO_WIFI_RESCAN=1 grants exactly that one action to exactly the service user; =0 removes our rule;
+# unset leaves the current state. The grant still has to allow wifi.scan with an explicit rescan constraint.
+WIFI_RESCAN_STATUS=unchanged
+polkit_present(){ [[ -x /usr/lib/polkit-1/polkitd || -x /usr/libexec/polkitd ]] || have pkaction; }
+case "$WIFI_RESCAN" in
+  1)
+    if ! polkit_present; then
+      WIFI_RESCAN_STATUS=unavailable   # nothing would enforce the rule; don't claim it's enabled
+    else
+      # Don't touch an existing rules.d (distros ship it polkitd-owned 0700); create it only if missing.
+      [[ -d /etc/polkit-1/rules.d ]] || install -d -o root -g root -m 0755 /etc/polkit-1/rules.d
+      cat >"$POLKIT_RULE.tmp" <<EOF
+// Installed by mcp-remote-sudo (MCP_REMOTE_SUDO_WIFI_RESCAN=1): lets the service user force a Wi-Fi rescan, nothing else.
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.NetworkManager.wifi.scan" && subject.user == "$SERVICE_USER") {
+        return polkit.Result.YES;
+    }
+});
+EOF
+      chown root:root "$POLKIT_RULE.tmp"; chmod 0644 "$POLKIT_RULE.tmp"; mv -f "$POLKIT_RULE.tmp" "$POLKIT_RULE"
+      WIFI_RESCAN_STATUS=enabled
+    fi ;;
+  0)
+    rm -f "$POLKIT_RULE"; WIFI_RESCAN_STATUS=disabled ;;
+esac
+
 # Operator entry point (#56): runs the admin in isolated mode (-I: no PYTHONPATH, no user site), so it never sees the
 # packs directory and never imports pack code as root.
 ADMIN_WRAPPER="/usr/local/sbin/mcp-remote-sudo-admin"
@@ -370,6 +403,7 @@ manifest_not_after: $NOT_AFTER
 manifest_backup: ${MANIFEST_BACKUP:-none}
 port_source: $PORT_SOURCE
 icmp_probe: $ICMP_STATUS
+wifi_rescan: $WIFI_RESCAN_STATUS
 receipts: $RECEIPTS
 transport: loopback-only
 privileged_mutation: disabled

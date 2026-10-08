@@ -39,9 +39,28 @@ grep -Fq 'chmod 0755 "$PREFIX/src/install/bootstrap.sh" "$PREFIX/src/install/ins
 wrapper="$(sed -n '/^cat >"\$ADMIN_WRAPPER.tmp" <<EOF$/,/^EOF$/p' "$INSTALL")"
 grep -qxF 'exec $PREFIX/venv/bin/python -I -m mcp_remote_sudo.admin "\$@"' <<<"$wrapper" || { echo "FAIL: admin wrapper must exec python -I -m mcp_remote_sudo.admin"; exit 1; }
 grep -qF 'chown root:root "$ADMIN_WRAPPER.tmp"; chmod 0755 "$ADMIN_WRAPPER.tmp"' "$INSTALL"
-grep -qx 'rm -f /usr/local/sbin/mcp-remote-sudo-admin' "$UNINSTALL"
+grep -qx 'rm -f /usr/local/sbin/mcp-remote-sudo-admin /etc/polkit-1/rules.d/60-mcp-remote-sudo-wifi-scan.rules' "$UNINSTALL"
 # The isolated wrapper is the only admin launcher: no non-isolated console script.
 refute grep -q '^mcp-remote-sudo-admin *=' "$ROOT/pyproject.toml"
+
+# Opt-in polkit rule (#59): the exact rule text (any change to its scope fails here), plan line, early validation.
+rule="$(sed -n '/^      cat >"\$POLKIT_RULE.tmp" <<EOF$/,/^EOF$/p' "$INSTALL")"
+expected_rule='      cat >"$POLKIT_RULE.tmp" <<EOF
+// Installed by mcp-remote-sudo (MCP_REMOTE_SUDO_WIFI_RESCAN=1): lets the service user force a Wi-Fi rescan, nothing else.
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.NetworkManager.wifi.scan" && subject.user == "$SERVICE_USER") {
+        return polkit.Result.YES;
+    }
+});
+EOF'
+expect_eq "$rule" "$expected_rule"
+grep -qF 'GRANT polkit org.freedesktop.NetworkManager.wifi.scan to $SERVICE_USER only: $POLKIT_RULE' "$INSTALL"
+grep -qF 'case "$WIFI_RESCAN" in ""|0|1) ;; *) fail "invalid_MCP_REMOTE_SUDO_WIFI_RESCAN" ;; esac' "$INSTALL"
+out="$(MCP_REMOTE_SUDO_WIFI_RESCAN=yes bash "$INSTALL" --plan 2>&1 || true)"
+grep -q 'reason: invalid_MCP_REMOTE_SUDO_WIFI_RESCAN' <<<"$out"
+refute grep -q '^BOOTSTRAP_PLAN$' <<<"$out"
+grep -qF '[[ -d /etc/polkit-1/rules.d ]] || install -d' "$INSTALL"
+grep -qx 'wifi_rescan: $WIFI_RESCAN_STATUS' "$INSTALL"
 
 # Source-level safety assertions for the bootstrap script.
 refute grep -Eq '0\.0\.0\.0|NOPASSWD: *ALL|chmod +777|shell=True' "$INSTALL"
