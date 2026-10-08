@@ -67,3 +67,49 @@ def test_fixed_session_mode_is_unchanged(tmp_path):
     assert rt.session_mode=="fixed"
     with pytest.raises(ValueError, match="binding_mismatch:session"):
         Runtime(Authority(manifest("other")),ReceiptWriter(tmp_path/"r2.jsonl"),agent="mcp-remote-sudo",session="baseline",host="lobster")
+
+
+def test_rejected_grant_in_manifest_mode_rolls_back_to_the_previous_session(host, monkeypatch):
+    tmp, rt, rl, adm = host
+    cand=tmp/"c.yaml"; cand.write_text(yaml.safe_dump(manifest("x",allow=("system.info","example.external"),id="bad")))
+    with pytest.raises(admin_mod.AdminError, match="rejected the new authority.*restored"):
+        adm.grant(str(cand),yes=True,timeout=2)
+    assert rt.session=="sess-initial"
+    assert yaml.safe_load((tmp/"authority.yaml").read_text())["binding"]["session"]=="sess-initial"
+
+
+def test_revoke_in_manifest_mode_keeps_the_current_session(host):
+    tmp, rt, rl, adm = host
+    adm.revoke(yes=True,timeout=2)
+    assert rt.session=="sess-initial" and rt.authority.allowed_tools==set()
+
+
+def test_grant_refuses_to_guess_the_session_mode(host):
+    tmp, rt, rl, adm = host
+    (tmp/"authority-status.json").unlink()
+    cand=tmp/"c.yaml"; cand.write_text(yaml.safe_dump(manifest("x",id="g")))
+    with pytest.raises(admin_mod.AdminError, match="cannot determine the service's session mode"):
+        adm.grant(str(cand),yes=True,timeout=2)
+    adm.session_mode_override="manifest"
+    rl.write_status(True)       # the service is fine; only the operator's view was missing
+    adm.grant(str(cand),yes=True,timeout=2)
+    assert rt.session.startswith("sess-") and rt.session!="sess-initial"
+
+
+def test_fixed_session_service_rejects_a_minted_session_even_if_status_lies(tmp_path, monkeypatch):
+    m=tmp_path/"authority.yaml"; m.write_text(yaml.safe_dump(manifest("baseline")))
+    rt=Runtime(Authority.load(m),ReceiptWriter(tmp_path/"r.jsonl"),agent="mcp-remote-sudo",session="baseline",host="lobster")
+    reg=packs.default_registry(); server=build_server(rt,registry=reg)
+    rl=AuthorityReloader(server,rt,reg,m,tmp_path/"authority-status.json"); rl.write_status(True)
+    st=json.loads((tmp_path/"authority-status.json").read_text()); st["session_mode"]="manifest"
+    (tmp_path/"authority-status.json").write_text(json.dumps(st))          # a (compromised) service claims manifest mode
+    def fake_run(argv):
+        if list(argv)[:2]==["systemctl","kill"]: rl.reload()
+        class R: returncode=0; stdout=""; stderr=""
+        return R()
+    monkeypatch.setattr(admin_mod,"run",fake_run)
+    adm=Admin(str(m),str(tmp_path),str(tmp_path/"r.jsonl"),"svc",out=io.StringIO())
+    cand=tmp_path/"c.yaml"; cand.write_text(yaml.safe_dump(manifest("anything",id="g")))
+    with pytest.raises(admin_mod.AdminError, match="rejected"):
+        adm.grant(str(cand),yes=True,timeout=2)
+    assert rt.session=="baseline" and yaml.safe_load(m.read_text())["binding"]["session"]=="baseline"

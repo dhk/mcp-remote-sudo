@@ -281,7 +281,8 @@ Type=simple
 User=$SERVICE_USER
 Group=$SERVICE_USER
 SupplementaryGroups=systemd-journal
-ExecStart=$PREFIX/venv/bin/mcp-remote-sudo --manifest $MANIFEST --agent mcp-remote-sudo --session baseline --host $HOST --receipts $RECEIPTS --port $PORT
+# No --session: the session comes from the active manifest and each admin grant mints a new one (#39).
+ExecStart=$PREFIX/venv/bin/mcp-remote-sudo --manifest $MANIFEST --agent mcp-remote-sudo --host $HOST --receipts $RECEIPTS --port $PORT
 Restart=on-failure
 # SIGHUP means "reload"; if one lands before Python installs its handler, restart rather than stay down.
 RestartForceExitStatus=SIGHUP

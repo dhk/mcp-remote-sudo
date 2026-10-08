@@ -15,8 +15,9 @@ sudo $A pack list                    # built-in packs and which operations are e
 
 ## How `grant` works
 
-1. **Validate** the manifest. It must not already be expired, and its binding (agent, session, host) must match the
-   active manifest's binding. The service also enforces the binding at reload.
+1. **Validate** the manifest. It must not already be expired. Its binding must match the active manifest's binding:
+   agent and host always, and the session too in fixed-session mode. The service also enforces the binding at
+   reload.
 2. **Show** the diff and the operations added and removed, then ask for confirmation. `--yes` skips the prompt.
 3. **Back up** the current authority to `authority.yaml.bak-<UTC timestamp>`, then install the new one atomically
    (temporary file, fsync, rename).
@@ -52,9 +53,11 @@ writes an `authority.reload` receipt.
 
 ## Sessions
 
-If the service is started **without** `--session`, it takes its session from the active manifest, and each `grant`
-mints a fresh `sess-<timestamp>-<random>` ID. Every investigation then has its own session in the receipts, and each
+The installer starts the service **without** `--session`, so it takes its session from the active manifest, and each
+`grant` mints a fresh `sess-<timestamp>-<random>` ID. `binding.session` is still required in the manifest you write;
+any placeholder works, and the diff shows the minted value that replaces it. Every investigation then has its own session in the receipts, and each
 `authority.reload` receipt records the previous session. Agent and host must still match the service.
 
 A service started with a fixed `--session` (the legacy behaviour) keeps it. Grants must then carry the same session,
-and none is minted. `status` shows which mode is active.
+and none is minted. `status` shows which mode is active. If the service's status file is unavailable, `grant` refuses
+rather than guess; pass `--session-mode manifest|fixed`. Re-run the installer to move an older unit to manifest mode.
