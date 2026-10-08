@@ -283,6 +283,8 @@ Group=$SERVICE_USER
 SupplementaryGroups=systemd-journal
 ExecStart=$PREFIX/venv/bin/mcp-remote-sudo --manifest $MANIFEST --agent mcp-remote-sudo --session baseline --host $HOST --receipts $RECEIPTS --port $PORT
 Restart=on-failure
+# SIGHUP means "reload"; if one lands before Python installs its handler, restart rather than stay down.
+RestartForceExitStatus=SIGHUP
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

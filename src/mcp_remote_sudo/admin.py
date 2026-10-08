@@ -175,7 +175,8 @@ class Admin:
         if not yes and input(f"{action} this authority? [y/N] ").strip().lower() not in ("y", "yes"):
             raise AdminError("aborted by operator")
         st = self.read_status()
-        if current is not None and st and st.get("manifest_hash") != current.manifest_hash:
+        disk_is_running = current is not None and bool(st) and st.get("manifest_hash") == current.manifest_hash
+        if current is not None and st and not disk_is_running:
             self.say(f"warning: {self.manifest} ({current.manifest_hash}) is not what the service runs "
                      f"({st.get('manifest_hash')}); the backup will hold the file on disk, not the running authority")
         backup = self._backup() if current is not None else None
@@ -189,6 +190,10 @@ class Admin:
         if outcome == "rejected" and action == "grant" and backup is not None:
             # Only an explicit rejection by the service rolls a grant back; the service kept its previous authority.
             os.replace(backup, self.manifest)
+            if not disk_is_running:
+                # Re-signalling would activate a file that was never reviewed or loaded: leave the service as it is.
+                raise AdminError(f"service rejected the new authority ({detail}); restored {self.manifest} from backup, "
+                                 f"but that file differs from what the service runs, so it was NOT reloaded")
             try:
                 self._signal_reload()
             except AdminError:

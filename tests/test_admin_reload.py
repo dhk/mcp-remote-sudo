@@ -242,3 +242,22 @@ def test_warns_when_the_file_on_disk_is_not_what_the_service_runs(tmp_path, monk
     h.manifest.write_text(yaml.safe_dump(manifest(["system.info"],id="disk-only")))   # never loaded
     h.admin.grant(str(h.write_candidate(tmp_path,manifest(["system.info"],id="g"))),yes=True,timeout=2)
     assert "is not what the service runs" in h.out.getvalue()
+
+
+def test_rejected_grant_does_not_activate_an_unreviewed_disk_file(tmp_path, monkeypatch):
+    """Regression (review of #62): restoring + re-signalling used to load a file the service had never run."""
+    h=Host(tmp_path,monkeypatch)
+    unreviewed=manifest(["system.info","wifi.scan","wifi.status"],id="unreviewed")
+    h.manifest.write_text(yaml.safe_dump(unreviewed))                    # on disk, never loaded
+    signals=[]
+    def fake_run(argv):
+        argv=list(argv); signals.append(argv)
+        if argv[:2]==["systemctl","kill"]: h.reloader.reload()
+        class R: returncode=0; stdout=""; stderr=""
+        return R()
+    monkeypatch.setattr(admin_mod,"run",fake_run)
+    cand=h.write_candidate(tmp_path,manifest(["system.info","example.external"],id="bad"))   # will be rejected
+    with pytest.raises(AdminError, match="NOT reloaded"):
+        h.admin.grant(str(cand),yes=True,timeout=2)
+    assert sum(1 for x in signals if x[:2]==["systemctl","kill"])==1          # no second signal
+    assert h.tools()=={"system_info","network_status"}                          # still the original authority

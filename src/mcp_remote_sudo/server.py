@@ -1,4 +1,10 @@
 from __future__ import annotations
+# Installed before the heavy imports below: Python's default SIGHUP action terminates the process, and systemd treats
+# that as a clean exit (no restart). A reload requested while the service is still starting is recorded here and
+# applied once the event-loop handler is in place (see main()).
+import signal as _signal
+_EARLY_HUP:list[int]=[]
+_signal.signal(_signal.SIGHUP,lambda signum,frame:_EARLY_HUP.append(signum))
 import argparse, asyncio, functools, hashlib, inspect, json, logging, os, signal, socket
 import yaml
 from datetime import datetime, timezone
@@ -103,6 +109,7 @@ def main()->None:
     async def serve()->None:
         # Reload runs as an event-loop callback, so tool changes never interleave with request handling.
         asyncio.get_running_loop().add_signal_handler(signal.SIGHUP,reloader.reload)
+        if _EARLY_HUP: reloader.reload()
         await mcp.run_streamable_http_async()
     asyncio.run(serve())
 if __name__=="__main__": main()
