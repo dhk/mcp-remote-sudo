@@ -21,6 +21,7 @@ class Runtime:
     a fixed session (legacy --session) must match every manifest."""
     def __init__(self,authority:Authority,receipts:ReceiptWriter,*,agent:str,session:str|None,host:str):
         self.receipts=receipts; self.agent=agent; self.host=host; self.fixed_session=session
+        self.registry:packs.Registry|None=None; self.state_dir:Path|None=None   # set by build_server/main
         self.check(authority); self.authority=authority
     @property
     def session(self)->str: return self.fixed_session or self.authority.manifest["binding"]["session"]
@@ -54,6 +55,7 @@ def _tool_function(runtime:Runtime, op:packs.Operation)->Callable[...,Any]:
 
 def build_server(runtime:Runtime, *, port:int=8765, registry:packs.Registry|None=None)->FastMCP:
     mcp=FastMCP("mcp-remote-sudo",host="127.0.0.1",port=port); registry=registry or packs.default_registry()
+    runtime.registry=registry
     # Fail closed: every allowed operation must be provided by an installed pack.
     for op in registry.require(runtime.authority.allowed_tools):
         mcp.add_tool(_tool_function(runtime,op),name=op.tool,description=op.description)
@@ -118,7 +120,7 @@ def main()->None:
         sys.path.extend(pack_install.search_paths(a.packs_dir))  # one dir per distribution; appended, never prepended
     authority=Authority.load(a.manifest); runtime=Runtime(authority,ReceiptWriter(a.receipts),agent=a.agent,session=a.session,host=a.host)
     if not 1 <= a.port <= 65535: p.error("--port must be between 1 and 65535")
-    registry=packs.default_registry(); mcp=build_server(runtime,port=a.port,registry=registry)
+    registry=packs.default_registry(); runtime.state_dir=Path(a.state_dir); mcp=build_server(runtime,port=a.port,registry=registry)
     reloader=AuthorityReloader(mcp,runtime,registry,a.manifest,Path(a.state_dir)/"authority-status.json"); reloader.write_status(True)
     async def serve()->None:
         # Reload runs as an event-loop callback, so tool changes never interleave with request handling.

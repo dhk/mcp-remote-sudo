@@ -95,3 +95,26 @@ refused while the active authority uses the pack's operations, or while another 
 
 The admin never imports pack code. Installing a pack grants nothing: its operations become available, and a later
 `grant` decides what is exposed.
+
+## Proposals: Claude drafts, you grant
+
+When an investigation needs authority it doesn't have, Claude calls `authority.propose(purpose, operations,
+constraints, ttl_minutes)`. That's an MCP operation the active authority must allow; the baseline includes it.
+
+The service:
+
+1. Builds a manifest from the packs' templates, with their default constraints, plus any constraints Claude passed.
+2. Validates the manifest.
+3. Stores it under `/var/lib/mcp-remote-sudo/proposals/<id>.yaml`.
+4. Returns the YAML, a diff against the active authority, warnings (unconstrained arguments, mutating operations),
+   the SHA-256 digest, and the exact command to run.
+
+**Nothing is granted.** You review it and then run:
+
+```bash
+sudo $A grant --proposal prop-20261003T120000Z-1a2b3c --sha256 <digest>
+```
+
+The proposal store is writable by the service, so `grant` reads the file once, checks the digest of exactly those
+bytes against the one you reviewed, and parses those same bytes. A proposal changed after review is refused. Proposal
+IDs are validated, which rules out path traversal. Only the 100 newest proposals are kept.

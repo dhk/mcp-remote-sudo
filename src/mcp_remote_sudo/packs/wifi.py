@@ -8,6 +8,10 @@ PACK = TaskPack(
     name="wifi",
     version="1",
     description="Read-only Wi-Fi, driver and connectivity diagnostics.",
+    templates={"read-only": {"description": "Bounded Wi-Fi diagnostics.", "rules": {
+        "kernel.wifi.log": {"lines": {"minimum": 1, "maximum": 200}},
+        "network.probe": {"count": {"minimum": 1, "maximum": 4}},
+    }}},
     operations=(
         Operation("wifi.status", "wifi_status", adapters.wifi_status,
                   description="NetworkManager device status."),
