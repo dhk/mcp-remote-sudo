@@ -405,6 +405,11 @@ class Admin:
         return "pending", f"no reload confirmation from {self.status_path} within {timeout:g}s (service busy?)"
 
 def main(argv: Sequence[str] | None = None) -> int:
+    if os.geteuid() == 0 and not sys.flags.isolated:
+        # As root, environment-controlled import paths (PYTHONPATH, user site) could pull in pack or other code.
+        print("error: run as /usr/local/sbin/mcp-remote-sudo-admin (isolated interpreter: python -I); "
+              "refusing to run as root without isolated mode", file=sys.stderr)
+        return 2
     p = argparse.ArgumentParser(prog="mcp-remote-sudo-admin", description=__doc__.splitlines()[0])
     p.add_argument("--manifest", default=DEFAULT_MANIFEST)
     p.add_argument("--state-dir", default=DEFAULT_STATE_DIR)

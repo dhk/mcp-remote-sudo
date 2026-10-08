@@ -2,6 +2,9 @@
 
 The operator, not the agent, changes authority. Run these commands on the host, with sudo:
 
+Always use the installed wrapper. As root, the admin refuses to run without an isolated interpreter (`python -I`), so
+the venv's own `bin/mcp-remote-sudo-admin` can't be used with sudo.
+
 ```bash
 A=/usr/local/sbin/mcp-remote-sudo-admin   # installed wrapper: runs the admin with python -I
 sudo $A status                       # active authority, what the service has loaded, service state

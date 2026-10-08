@@ -308,3 +308,12 @@ def test_main_applies_a_sighup_queued_during_startup(tmp_path, monkeypatch):
     assert added==[signal.SIGHUP] and st["manifest_id"]=="one"
     reloads=[json.loads(x) for x in (tmp_path/"r.jsonl").read_text().splitlines() if '"authority.reload"' in x]
     assert len(reloads)==1 and reloads[0]["result"]=="success"     # the queued startup SIGHUP was applied, once
+
+
+def test_admin_refuses_root_without_isolated_mode(monkeypatch, capsys):
+    import sys as _sys
+    monkeypatch.setattr(admin_mod.os, "geteuid", lambda: 0)
+    class Flags: isolated = 0
+    monkeypatch.setattr(admin_mod.sys, "flags", Flags)
+    assert admin_mod.main(["status"]) == 2
+    assert "isolated" in capsys.readouterr().err
