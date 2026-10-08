@@ -9,7 +9,8 @@ from mcp_remote_sudo.packs import Operation, PackError, Param, Registry, TaskPac
 from mcp_remote_sudo.server import build_server
 
 BUILTIN = {"system.info","network.status","systemd.status","journal.query","journal.boots","receipts.tail","authority.propose",
-           "wifi.status","wifi.scan","wifi.link","wifi.driver.status","kernel.wifi.log","network.probe"}
+           "wifi.status","wifi.scan","wifi.link","wifi.driver.status","kernel.wifi.log","network.probe",
+           "wifi.radio.set","service.restart","kernel.module.reload"}
 
 
 class RecordingRuntime:

@@ -1,6 +1,6 @@
 # Privileged helper
 
-Status: implemented by #41, with per-action confirmation added by #42 (both held for operator review). Roadmap §4, "Controlled mutation".
+Status: implemented by #41; per-action confirmation by #42; first operations by #43 (all held for operator review). Roadmap §4, "Controlled mutation".
 
 ## Why a helper
 
@@ -25,8 +25,23 @@ mcp-remote-sudo (uid mcp-remote-sudo)  ──JSON over /run/mcp-remote-sudo/help
 | Evidence | Its own hash-chained receipts in `/var/log/mcp-remote-sudo-helper/`, a root-owned `0750` directory. They're kept out of the service's directory so the service user can't unlink or replace them. |
 | OS ceiling | `CapabilityBoundingSet=` (empty until a pack needs a specific capability), `RestrictAddressFamilies=AF_UNIX`, `IPAddressDeny=any`, `ProtectSystem=strict`, `NoNewPrivileges=true` |
 
-#41 ships only `helper.ping`, so no host state can change yet. Each operation added later (#43) must be reviewed
-together with any capability it adds to the unit.
+## Operations (#43, `wifi-remediate`)
+
+These are the recovery steps for a wedged `wl` driver, from least to most invasive:
+
+| Operation | Runs | Grant must enumerate | Inverse recorded | Capability |
+|---|---|---|---|---|
+| `wifi.radio.set(state)` | `nmcli radio wifi on\|off` | `state` | the opposite state | none (D-Bus as uid 0) |
+| `service.restart(unit)` | `systemctl restart -- <unit>`, for `.service` units only | `unit` | none | none (D-Bus as uid 0) |
+| `kernel.module.reload(name)` | `modprobe -r <name>`, then `modprobe <name>` | `name` | none | `CAP_SYS_MODULE` |
+
+**Resource arguments must be pinned.** If the matching grant rule doesn't constrain a resource argument with an
+`enum` (or an exact value), the helper refuses. A grant can't say "restart any service".
+
+**The unit is still narrow.** The helper unit's capability set is exactly `CAP_SYS_MODULE`, with
+`ProtectKernelModules=false` so `modprobe` works. The installer test fails if the set grows. Every other restriction
+stays in place, including `NoNewPrivileges`, `ProtectSystem=strict`, `RestrictAddressFamilies=AF_UNIX` and
+`IPAddressDeny=any`. Any new operation must be reviewed together with whatever capability it adds.
 
 ## What this does not defend against
 

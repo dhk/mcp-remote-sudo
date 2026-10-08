@@ -189,7 +189,7 @@ BACKUP existing $MANIFEST to $MANIFEST.bak-<timestamp> (if present)
 INSTALL baseline authority: $MANIFEST
 GRANT journal read via systemd-journal group when present
 INSTALL operator command: /usr/local/sbin/mcp-remote-sudo-admin (isolated python -I)
-INSTALL privileged helper: $SERVICE-helper.socket (0660 root:$SERVICE_USER, typed operations only, no capabilities)
+INSTALL privileged helper: $SERVICE-helper.socket (0660 root:$SERVICE_USER, typed operations only, CAP_SYS_MODULE only)
 ENABLE and START: $SERVICE.service
 CONFIGURE ICMP echo sockets for group $SERVICE_USER only: $SYSCTL_DROPIN (skip with MCP_REMOTE_SUDO_ICMP=0)
 GRANT polkit org.freedesktop.NetworkManager.wifi.scan to $SERVICE_USER only: $POLKIT_RULE (only with MCP_REMOTE_SUDO_WIFI_RESCAN=1; =0 removes; unset unchanged)
@@ -396,13 +396,15 @@ Type=simple
 User=root
 ExecStart=$PREFIX/venv/bin/python -I -m mcp_remote_sudo.helper --manifest $MANIFEST --receipts $HELPER_LOG_DIR/receipts.jsonl --service-user $SERVICE_USER --approvals-dir $APPROVALS_DIR
 NoNewPrivileges=true
-CapabilityBoundingSet=
+# CAP_SYS_MODULE only, for kernel.module.reload (#43, allowlisted names enumerated by the grant). systemctl and
+# nmcli act over D-Bus as uid 0 and need no capability. ProtectKernelModules must be off for modprobe to work.
+CapabilityBoundingSet=CAP_SYS_MODULE
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 PrivateDevices=true
 ProtectKernelTunables=true
-ProtectKernelModules=true
+ProtectKernelModules=false
 ProtectControlGroups=true
 RestrictAddressFamilies=AF_UNIX
 IPAddressDeny=any

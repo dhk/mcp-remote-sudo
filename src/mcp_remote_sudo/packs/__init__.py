@@ -112,8 +112,8 @@ def helper_adapter(name: str, *, socket_path: str | None = None) -> Callable[...
 
 
 def builtin_packs() -> list[TaskPack]:
-    from . import core, wifi
-    return [replace(p, distribution="mcp-remote-sudo") for p in (core.PACK, wifi.PACK)]
+    from . import core, wifi, wifi_remediate
+    return [replace(p, distribution="mcp-remote-sudo") for p in (core.PACK, wifi.PACK, wifi_remediate.PACK)]
 
 
 def discover_packs() -> list[TaskPack]:

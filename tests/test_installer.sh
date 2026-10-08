@@ -71,12 +71,15 @@ helper_socket="$(sed -n '/mcp-remote-sudo-helper.socket" <<EOF/,/^EOF$/p' "$INST
 for line in 'SocketMode=0660' 'SocketGroup=$SERVICE_USER' 'SocketUser=root' 'ListenStream=/run/mcp-remote-sudo/helper.sock'; do
   grep -qxF "$line" <<<"$helper_socket" || { echo "FAIL: helper socket missing $line"; exit 1; }
 done
-for line in 'CapabilityBoundingSet=' 'NoNewPrivileges=true' 'RestrictAddressFamilies=AF_UNIX' 'IPAddressDeny=any' 'ProtectSystem=strict' 'ReadWritePaths=$HELPER_LOG_DIR $APPROVALS_DIR'; do
+for line in 'CapabilityBoundingSet=CAP_SYS_MODULE' 'NoNewPrivileges=true' 'RestrictAddressFamilies=AF_UNIX' 'IPAddressDeny=any' 'ProtectSystem=strict' 'ReadWritePaths=$HELPER_LOG_DIR $APPROVALS_DIR'; do
   grep -qxF "$line" <<<"$helper_unit" || { echo "FAIL: helper unit missing $line"; exit 1; }
 done
 refute grep -q 'AmbientCapabilities' <<<"$helper_unit"
 # The helper runs as root: isolated interpreter, never a console script that honours PYTHONPATH.
 grep -qF 'ExecStart=$PREFIX/venv/bin/python -I -m mcp_remote_sudo.helper ' <<<"$helper_unit" || { echo 'FAIL: helper must run python -I -m'; exit 1; }
+# The helper's capability set is exactly CAP_SYS_MODULE (module reload); anything broader needs review.
+expect_eq "$(grep -c '^CapabilityBoundingSet=' <<<"$helper_unit")" "1"
+refute grep -Eq '^CapabilityBoundingSet=.*(CAP_SYS_ADMIN|CAP_NET_ADMIN|CAP_DAC_OVERRIDE|CAP_SETUID)' <<<"$helper_unit"
 grep -qF 'install -d -o root -g root -m 0750 "$HELPER_LOG_DIR"' "$INSTALL"
 grep -qF 'install -d -o root -g root -m 0700 "$APPROVALS_DIR"' "$INSTALL"
 grep -qF 'systemctl enable --now "$SERVICE-helper.socket"' "$INSTALL"

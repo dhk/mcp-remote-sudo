@@ -21,6 +21,7 @@ import pwd
 import re
 import socket
 import struct
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -44,6 +45,35 @@ class HelperOperation:
     run: Callable[..., dict]
     params: dict[str, type]
     confirm: bool = True    # host-changing operations honour the rule's confirmation mode (default: operator)
+    require_enum: tuple[str, ...] = ()   # resource arguments the grant MUST pin with an enum (no open-ended grants)
+
+
+SERVICE_UNIT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@:-]{0,200}\.service$")
+KMOD = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
+
+
+def _exec(argv: list[str], timeout: int = 60) -> dict:
+    p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+    if p.returncode != 0:
+        raise RuntimeError(f"{argv[0]} exited {p.returncode}")
+    return {"argv": argv, "returncode": p.returncode, "stdout": p.stdout[-4000:], "stderr": p.stderr[-2000:]}
+
+
+def _wifi_radio_set(state: str) -> dict:
+    if state not in ("on", "off"): raise ValueError("state must be on or off")
+    result = _exec(["nmcli", "radio", "wifi", state])
+    return {**result, "inverse": {"operation": "wifi.radio.set", "arguments": {"state": "off" if state == "on" else "on"}}}
+
+
+def _service_restart(unit: str) -> dict:
+    if not SERVICE_UNIT.fullmatch(unit): raise ValueError("unit must be a .service unit name")
+    return {**_exec(["systemctl", "restart", "--", unit], timeout=90), "inverse": None}
+
+
+def _kernel_module_reload(name: str) -> dict:
+    if not KMOD.fullmatch(name): raise ValueError("invalid kernel module name")
+    unload = _exec(["modprobe", "-r", name]); load = _exec(["modprobe", name])
+    return {"unload": unload, "load": load, "inverse": None}
 
 
 def _ping() -> dict:
@@ -53,6 +83,10 @@ def _ping() -> dict:
 # The helper's own operation table. Mutation packs (#43) add entries here — never via the request.
 OPERATIONS: dict[str, HelperOperation] = {
     "helper.ping": HelperOperation("helper.ping", _ping, {}, confirm=False),
+    # wifi-remediate pack (#43): the recovery ladder for a wedged Wi-Fi driver, least invasive first.
+    "wifi.radio.set": HelperOperation("wifi.radio.set", _wifi_radio_set, {"state": str}, require_enum=("state",)),
+    "service.restart": HelperOperation("service.restart", _service_restart, {"unit": str}, require_enum=("unit",)),
+    "kernel.module.reload": HelperOperation("kernel.module.reload", _kernel_module_reload, {"name": str}, require_enum=("name",)),
 }
 
 
@@ -106,6 +140,11 @@ class Helper:
             decision = authority.evaluate(name, args)
             if not decision.allowed:
                 raise Refused(f"manifest:{decision.reason}")
+            rule_args = (decision.rule or {}).get("args", {})
+            for pinned in op.require_enum:
+                spec = rule_args.get(pinned)
+                if not (isinstance(spec, dict) and isinstance(spec.get("enum"), list)) and not isinstance(spec, str):
+                    raise Refused(f"grant_must_enumerate:{pinned}")
             mode = (decision.rule or {}).get("confirmation", "operator") if op.confirm else "grant-only"
             if mode == "operator":
                 # Enforced here, not in the service: a single-use root-owned approval bound to this exact request.
