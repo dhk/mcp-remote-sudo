@@ -17,12 +17,17 @@ rm -rf /var/lib/mcp-remote-sudo
 # Only reset the live value if it is still exactly the range we installed,
 # then re-apply any administrator-configured value from sysctl.d.
 if [[ -f "$SYSCTL_DROPIN" ]]; then
-  rm -f "$SYSCTL_DROPIN"
   current="$(sysctl -n net.ipv4.ping_group_range 2>/dev/null | tr -s ' \t' ' ' || true)"
   if [[ -n "$SERVICE_GID" && "$current" == "$SERVICE_GID $SERVICE_GID" ]]; then
-    sysctl -w net.ipv4.ping_group_range="1 0" >/dev/null || true
-    sysctl --system >/dev/null 2>&1 || true
+    # Reset the live grant first; if that fails, keep the drop-in and stop so
+    # the remaining grant is visible rather than reported as removed.
+    if ! sysctl -w net.ipv4.ping_group_range="1 0" >/dev/null; then
+      echo "uninstall failed: could not reset net.ipv4.ping_group_range; group $SERVICE_GID remains permitted ($SYSCTL_DROPIN kept)"
+      exit 1
+    fi
   fi
+  rm -f "$SYSCTL_DROPIN"
+  sysctl --system >/dev/null 2>&1 || true
   echo "removed ICMP grant: $SYSCTL_DROPIN"
 fi
 

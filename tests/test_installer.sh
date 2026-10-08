@@ -59,6 +59,7 @@ grep -Fq 'p.add_argument("--port",type=int,default=8765)' "$ROOT/src/mcp_remote_
 # (Explicit if/exit: a bare `! cmd` does not trip `set -e`.)
 if grep -Eq '^(AmbientCapabilities|CapabilityBoundingSet)=.*CAP_NET_RAW|^AmbientCapabilities=|setcap ' "$INSTALL"; then echo "installer must not grant CAP_NET_RAW"; exit 1; fi
 grep -q 'removed ICMP grant' "$UNINSTALL"
+grep -q 'uninstall failed: could not reset net.ipv4.ping_group_range' "$UNINSTALL"
 
 # ---------------------------------------------------------------------------
 # Behavioral tests of installer helpers (sourced with MCP_REMOTE_SUDO_LIB_ONLY=1
@@ -127,6 +128,11 @@ expect_eq "$(FAKE_PING_RANGE='987	987' lib icmp_decision 987)" enabled
 expect_eq "$(FAKE_PING_RANGE='0	2147483647' lib icmp_decision 987)" already_permitted
 expect_eq "$(FAKE_PING_RANGE='100	200' lib icmp_decision 987)" skipped_conflicting_range
 expect_eq "$(FAKE_PING_RANGE='1	0' MCP_REMOTE_SUDO_ICMP=0 lib icmp_decision 987)" disabled
+
+# A second backup in the same second gets a distinct name.
+backup2="$(lib backup_manifest)"
+[[ "$backup2" != "$backup" && -f "$backup" && -f "$backup2" ]] || { echo "FAIL: backup overwritten ($backup vs $backup2)"; exit 1; }
+rm -f "$WORK"/etc/authority.yaml.bak-*
 
 # A backup that cannot be written must fail (never silently proceed).
 # (Skipped as root, where directory permissions do not block writes.)

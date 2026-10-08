@@ -70,6 +70,9 @@ backup_manifest(){
   [[ -f "$MANIFEST" ]] || return 0
   local backup
   backup="$MANIFEST.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+  # Never overwrite an earlier backup (e.g. two runs within one second).
+  [[ ! -e "$backup" ]] || backup="$backup.$$"
+  [[ ! -e "$backup" ]] || return 1
   # Explicit failure handling: errexit is disabled inside command substitution.
   cp -p "$MANIFEST" "$backup" || return 1
   cmp -s "$MANIFEST" "$backup" || return 1
