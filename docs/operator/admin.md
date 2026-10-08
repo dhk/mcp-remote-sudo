@@ -49,3 +49,12 @@ writes an `authority.reload` receipt.
   automatic rollback.
 - `revoke` keeps the binding and sets `notAfter` to now. A call that's already running finishes under the previous
   authority. After the reload the service exposes no tools, so new calls fail as unknown tools.
+
+## Sessions
+
+If the service is started **without** `--session`, it takes its session from the active manifest, and each `grant`
+mints a fresh `sess-<timestamp>-<random>` ID. Every investigation then has its own session in the receipts, and each
+`authority.reload` receipt records the previous session. Agent and host must still match the service.
+
+A service started with a fixed `--session` (the legacy behaviour) keeps it. Grants must then carry the same session,
+and none is minted. `status` shows which mode is active.

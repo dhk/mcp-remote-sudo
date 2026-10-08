@@ -13,6 +13,7 @@ import fcntl
 import hashlib
 import json
 import os
+import secrets
 import subprocess
 import sys
 import time
@@ -87,6 +88,10 @@ class Admin:
     def current(self) -> Authority | None:
         return _load(self.manifest) if self.manifest.exists() else None
 
+    def _session_mode(self) -> str:
+        """'manifest' when the service takes its session from the manifest; otherwise sessions are fixed (legacy)."""
+        return (self.read_status() or {}).get("session_mode", "fixed")
+
     def read_status(self) -> dict[str, Any] | None:
         try:
             return json.loads(self.status_path.read_text())
@@ -112,6 +117,11 @@ class Admin:
         new = _load(path)
         if _expires_in(new) <= 0:
             raise AdminError("refusing to grant an already-expired authority")
+        if self._session_mode() == "manifest":
+            # Each grant is its own session, so receipts group by investigation.
+            m = json.loads(json.dumps(new.manifest))
+            m["binding"]["session"] = f"sess-{now().strftime('%Y%m%dT%H%M%SZ')}-{secrets.token_hex(3)}"
+            new = Authority(m)
         return self._install(new, yes=yes, timeout=timeout, action="grant")
 
     def revoke(self, *, yes: bool = False, timeout: float = 45.0) -> Authority:
@@ -143,6 +153,7 @@ class Admin:
         else:
             loaded = "matches" if a and st.get("manifest_hash") == a.manifest_hash else "DIFFERS from file on disk"
             self.say(f"service loaded: {st.get('manifest_hash')} ({loaded}); last reload ok={st.get('ok')} at {st.get('at')}")
+            self.say(f"session: {st.get('session')} ({st.get('session_mode', 'fixed')})")
             if st.get("error"): self.say(f"last reload error: {st['error']}")
         svc = run(["systemctl", "show", self.service, "-p", "ActiveState", "-p", "NRestarts", "--value"])
         if svc.returncode == 0:
@@ -180,8 +191,11 @@ class Admin:
 
     def _install_locked(self, new: Authority, *, yes: bool, timeout: float, action: str) -> Authority:
         current = self.current()
-        if current is not None and new.manifest["binding"] != current.manifest["binding"]:
-            raise AdminError(f"binding {new.manifest['binding']} does not match the active manifest's binding {current.manifest['binding']}")
+        if current is not None:
+            keys = ("agent", "host") if self._session_mode() == "manifest" else ("agent", "session", "host")
+            want = {k: current.manifest["binding"][k] for k in keys}; got = {k: new.manifest["binding"][k] for k in keys}
+            if got != want:
+                raise AdminError(f"binding {got} does not match the active manifest's binding {want}")
         self.out.write(diff_text(current, new))
         if not yes and input(f"{action} this authority? [y/N] ").strip().lower() not in ("y", "yes"):
             raise AdminError("aborted by operator")
