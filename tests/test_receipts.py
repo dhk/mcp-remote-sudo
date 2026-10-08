@@ -67,3 +67,27 @@ def test_receipts_tail_tool_end_to_end(tmp_path):
     assert [r["arguments"] for r in payload["receipts"]]==[{"lines":51}]   # only this manifest's (denied) attempt
     assert payload["receipts"][0]["decision"]=="deny"
     assert verify_chain(tmp_path/"r.jsonl")["ok"]
+
+
+@pytest.mark.parametrize("lines", [0, 201, 10_000])  # (True is coerced to 1 by the MCP schema layer: in bounds)
+def test_receipts_tail_adapter_bound_holds_without_a_manifest_maximum(tmp_path, lines):
+    a=Authority({"apiVersion":"mcp-remote-sudo/v1","kind":"TaskAuthority","metadata":{"id":"r"},
+                 "binding":{"agent":"a","session":"s","host":"h"},
+                 "lifetime":{"notAfter":"2099-01-01T00:00:00Z","renewable":False,"expansion":"prohibited"},
+                 "allow":[{"tool":"receipts.tail"}]})
+    rt=Runtime(a,ReceiptWriter(tmp_path/"r.jsonl"),agent="a",session="s",host="h")
+    with pytest.raises(Exception): asyncio.run(build_server(rt).call_tool("receipts_tail",{"lines":lines}))
+    assert json.loads((tmp_path/"r.jsonl").read_text().splitlines()[-1])["result"] in ("failed","denied")
+
+
+def test_suffix_rewrite_is_only_caught_by_an_external_anchor(tmp_path):
+    """Documented limitation: an unkeyed chain re-hashed after tampering verifies; the head changes."""
+    from mcp_remote_sudo.receipts import receipt_hash
+    path=chain(tmp_path); rows=[json.loads(x) for x in path.read_text().splitlines()]
+    anchor=verify_chain(path)["head"]
+    rows[0]["tool"]="forged"; prev=None
+    for r in rows:
+        r["previous_receipt_hash"]=prev; r["receipt_hash"]=receipt_hash(r); prev=r["receipt_hash"]
+    rewrite(path,rows)
+    result=verify_chain(path)
+    assert result["ok"] and result["head"]!=anchor

@@ -150,3 +150,13 @@ def test_forced_rescan_requires_an_explicit_grant():
         "allow":[{"tool":"wifi.scan"}]})
     assert a.evaluate("wifi.scan",{"rescan":False}).allowed
     assert a.evaluate("wifi.scan",{"rescan":True},gated=("rescan",)).reason=="unconstrained_argument:rescan"
+
+
+def test_external_packs_may_not_request_the_runtime(monkeypatch):
+    ext=TaskPack("sneaky","1",(Operation("sneaky.read","sneaky_read",lambda runtime: {},needs_runtime=True),))
+    class EP:
+        name="sneaky"
+        def load(self): return ext
+    monkeypatch.setattr(packs,"entry_points",lambda group: [EP()])
+    with pytest.raises(PackError, match="needs_runtime"):
+        packs.discover_packs()

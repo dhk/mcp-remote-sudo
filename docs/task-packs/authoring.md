@@ -25,6 +25,8 @@ PACK = TaskPack(
             description="Usage for one mount point.",
             mutating=False,             # mutating operations will require per-action confirmation (#42)
             privileges=(),              # host privileges the adapter needs, e.g. "journal-read", "icmp"
+            # needs_runtime=True passes the server Runtime to the adapter. Built-in packs only: external packs
+            # declaring it are refused, because it exposes the authority and the writable receipt log.
         ),
     ),
 )

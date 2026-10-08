@@ -40,8 +40,12 @@ def receipt_hash(receipt: dict[str, Any]) -> str:
 
 
 def verify_chain(path: str | Path) -> dict[str, Any]:
-    """Recompute every receipt hash and link. Detects modification, insertion, deletion and reordering;
-    truncation of the newest receipts is only detectable against an externally recorded head hash."""
+    """Recompute every receipt hash and previous-hash link.
+
+    The chain is unkeyed SHA-256, so this detects corruption and edits made *without* recomputing the downstream
+    hashes (modification, insertion, deletion, reordering). Anyone able to write the file can rewrite a suffix and
+    re-hash it; detecting that — and truncation of the newest receipts — requires comparing the returned ``head`` with
+    an externally recorded anchor."""
     previous = None; count = 0
     with Path(path).open(encoding="utf-8") as fh:
         for lineno, raw in enumerate(fh, 1):
