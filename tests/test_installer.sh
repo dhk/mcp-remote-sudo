@@ -7,6 +7,12 @@ bash -n "$INSTALL"
 UNINSTALL="$ROOT/install/uninstall.sh"
 bash -n "$UNINSTALL"
 
+# Explicit assertion helpers. Under `set -e`, a negated pipeline (`! cmd`) never
+# trips errexit, and a failing `[[ ]]` does not either on bash < 4.1, so every
+# assertion must fail explicitly.
+expect_eq(){ [[ "$1" == "$2" ]] || { echo "FAIL: expected '$2', got '$1'"; exit 1; }; }
+refute(){ if "$@"; then echo "FAIL: expected failure, but succeeded: $*"; exit 1; fi; }
+
 # Normal uninstall preserves audit/config state and its owning service identity;
 # destructive account/log/config removal belongs only to --purge.
 grep -q 'if \$PURGE; then' "$UNINSTALL"
@@ -14,7 +20,7 @@ purge_block="$(sed -n '/if \$PURGE; then/,/^else$/p' "$UNINSTALL")"
 grep -q 'rm -rf /etc/mcp-remote-sudo /var/log/mcp-remote-sudo' <<<"$purge_block"
 grep -q 'userdel mcp-remote-sudo' <<<"$purge_block"
 normal_block="$(sed -n '/^else$/,/^fi$/p' "$UNINSTALL")"
-! grep -q 'userdel mcp-remote-sudo' <<<"$normal_block"
+refute grep -q 'userdel mcp-remote-sudo' <<<"$normal_block"
 grep -q 'preserved: /etc/mcp-remote-sudo /var/log/mcp-remote-sudo and service user' "$UNINSTALL"
 
 out="$(bash "$INSTALL" --plan || true)"
@@ -24,13 +30,13 @@ grep -q 'RUNTIME_PRIVILEGED_MUTATION: disabled' <<<"$out"
 
 # Authority constraints must use the canonical fail-closed rule field.
 grep -q '^    args:$' "$INSTALL"
-! grep -q '^    arguments:$' "$INSTALL"
+refute grep -q '^    arguments:$' "$INSTALL"
 
 # Installed lifecycle scripts must support direct execution.
 grep -Fq 'chmod 0755 "$PREFIX/src/install/bootstrap.sh" "$PREFIX/src/install/install.sh" "$PREFIX/src/install/uninstall.sh"' "$INSTALL"
 
 # Source-level safety assertions for the bootstrap script.
-! grep -Eq '0\.0\.0\.0|NOPASSWD: *ALL|chmod +777|shell=True' "$INSTALL"
+refute grep -Eq '0\.0\.0\.0|NOPASSWD: *ALL|chmod +777|shell=True' "$INSTALL"
 grep -q 'NoNewPrivileges=true' "$INSTALL"
 grep -q 'ProtectSystem=strict' "$INSTALL"
 
@@ -41,7 +47,7 @@ grep -Eq '"mcp>=1\.0,<2"' "$ROOT/pyproject.toml"
 # Reinstall must activate newly installed code/config rather than leave a stale process.
 grep -Fq 'systemctl enable "$SERVICE.service"' "$INSTALL"
 grep -Fq 'systemctl restart "$SERVICE.service"' "$INSTALL"
-! grep -Fq 'systemctl enable --now "$SERVICE.service"' "$INSTALL"
+refute grep -Fq 'systemctl enable --now "$SERVICE.service"' "$INSTALL"
 
 # Ready must require sustained health and reject a restart during verification.
 grep -q 'NRestarts' "$INSTALL"
@@ -53,11 +59,10 @@ grep -q 'MCP_REMOTE_SUDO_PORT' "$INSTALL"
 grep -q 'port_in_use' "$INSTALL"
 grep -q -- '--port $PORT' "$INSTALL"
 grep -Fq 'p.add_argument("--port",type=int,default=8765)' "$ROOT/src/mcp_remote_sudo/server.py"
-! grep -Fq 'FastMCP("mcp-remote-sudo",host="127.0.0.1",port=8765)' "$ROOT/src/mcp_remote_sudo/server.py"
+refute grep -Fq 'FastMCP("mcp-remote-sudo",host="127.0.0.1",port=8765)' "$ROOT/src/mcp_remote_sudo/server.py"
 
 # ICMP support must never be granted through capabilities.
-# (Explicit if/exit: a bare `! cmd` does not trip `set -e`.)
-if grep -Eq '^(AmbientCapabilities|CapabilityBoundingSet)=.*CAP_NET_RAW|^AmbientCapabilities=|setcap ' "$INSTALL"; then echo "installer must not grant CAP_NET_RAW"; exit 1; fi
+refute grep -Eq '^(AmbientCapabilities|CapabilityBoundingSet)=.*CAP_NET_RAW|^AmbientCapabilities=|setcap ' "$INSTALL"
 grep -q 'removed ICMP grant' "$UNINSTALL"
 grep -q 'uninstall failed: could not reset net.ipv4.ping_group_range' "$UNINSTALL"
 
@@ -65,8 +70,6 @@ grep -q 'uninstall failed: could not reset net.ipv4.ping_group_range' "$UNINSTAL
 # Behavioral tests of installer helpers (sourced with MCP_REMOTE_SUDO_LIB_ONLY=1
 # against stub ss/sysctl and a fake /proc; nothing touches the host).
 # ---------------------------------------------------------------------------
-# Explicit assertion helper: `[[ ]]` failures do not trip `set -e` on bash < 4.1.
-expect_eq(){ [[ "$1" == "$2" ]] || { echo "FAIL: expected '$2', got '$1'"; exit 1; }; }
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/bin" "$WORK/proc/111" "$WORK/proc/222" "$WORK/etc"
