@@ -41,6 +41,8 @@ grep -q 'NoNewPrivileges=true' "$INSTALL"
 grep -qx 'RestartForceExitStatus=SIGHUP' "$INSTALL"
 # Sessions come from the manifest (#39): the unit must not pin one.
 refute grep -q '^ExecStart=.*--session' "$INSTALL"
+grep -q '^ExecStart=.* --packs-dir \$PREFIX/packs$' "$INSTALL"
+grep -qF 'install -d -o root -g root -m 0755 "$PREFIX/packs"' "$INSTALL"
 grep -q 'ProtectSystem=strict' "$INSTALL"
 
 # The server currently uses the MCP SDK 1.x FastMCP API; do not allow a fresh

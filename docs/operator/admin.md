@@ -61,3 +61,37 @@ any placeholder works, and the diff shows the minted value that replaces it. Eve
 A service started with a fixed `--session` (the legacy behaviour) keeps it. Grants must then carry the same session,
 and none is minted. `status` shows which mode is active. If the service's status file is unavailable, `grant` refuses
 rather than guess; pass `--session-mode manifest|fixed`. Re-run the installer to move an older unit to manifest mode.
+
+## External Task Packs
+
+```bash
+sudo $A pack install --requirements disk-pack.lock   # wheel-only, hash-pinned; restarts the service
+sudo $A pack remove example-pack                     # refused while the active authority uses its operations
+sudo $A pack list                                    # built-in + external (metadata only) + what the service loaded
+```
+
+The lockfile pins every distribution, dependencies included, as `name==version --hash=sha256:<digest>`. Each
+distribution gets its own directory, `/opt/mcp-remote-sudo/packs/<name>/`. The service appends each one to `sys.path`
+at lowest priority (`--packs-dir`, set on the unit by the installer). Installation:
+
+1. Runs `pip -I install --only-binary :all: --require-hashes --no-deps --no-compile --target <staging>/<name>` for each
+   pin. Only wheels are accepted, so no build hooks run as root, and nothing gets resolved beyond what the lockfile
+   pins.
+2. Refuses any distribution that would replace mcp-remote-sudo or one of its runtime dependencies.
+3. Checks the files **actually staged**, not what the wheel's metadata claims. Every top-level entry must be a plain
+   module name, a `.py` file, or a compiled extension module. It must not shadow the standard library, resolve in the
+   core environment, or belong to another installed pack. auditwheel `<name>.libs/` directories are allowed if unique.
+   Wheels with other top-level files (for example a shared `tests/` directory) are refused.
+4. Swaps the new directories in by rename, keeping the previous versions.
+5. Restarts the service and confirms it loaded every newly installed pack. If anything fails, the previous versions are
+   restored and the service is restarted again. A restart, rather than a reload, gives a clean import state.
+
+Pack operations take the same admin lock as `grant` and `revoke`, then a lock on the packs directory, so only
+one authority-changing operation runs at a time. If an earlier pack operation was interrupted after swapping, before
+the service confirmed the new packs, the next one first undoes it: it restores the previous versions, removes any packs
+that were new in that run, and restarts the service. `pack remove` deletes exactly `/opt/mcp-remote-sudo/packs/<name>`; it never uses a path taken from wheel metadata. It's
+refused while the active authority uses the pack's operations, or while another installed pack lists it in
+`Requires-Dist`.
+
+The admin never imports pack code. Installing a pack grants nothing: its operations become available, and a later
+`grant` decides what is exposed.
