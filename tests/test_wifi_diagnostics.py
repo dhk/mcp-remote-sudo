@@ -112,6 +112,8 @@ def test_truncated_window_drops_partial_first_line(monkeypatch):
     "kernel: ath: EEPROM regdomain: 0x0",
     "kernel: brcmfmac: brcmf_c_preinit_dcmds: Firmware: BCM4345/6",
     "kernel: ERROR @wl_notify_scan_status : ",
+    "kernel: b43-phy0: Broadcom 4311 WLAN found (core revision 13)",
+    "kernel: b43legacy-phy0: Loading firmware",
 ])
 def test_common_wifi_drivers_and_interface_names_match(line):
     assert adapters.WIFI_LOG_PATTERN.search(line.lower())
@@ -122,6 +124,10 @@ def test_common_wifi_drivers_and_interface_names_match(line):
                                   "kernel: usb 2-1: Product: USB 10/100/1000 LAN rtl8153",
                                   "kernel: brcm-pcie fd500000.pcie: link up, 5.0 GT/s PCIe x1 (SSC)",
                                   "kernel: bnxt_en 0000:3b:00.0 eth0: Broadcom BCM57414 NetXtreme-E 10Gb/25Gb RDMA Ethernet Controller",
-                                  "kernel: health: path loaded", "kernel: breath of fresh air"])
+                                  "kernel: health: path loaded", "kernel: breath of fresh air",
+                                  "kernel: BIOS-e820: [mem 0x00000000b4300000-0x00000000b43fffff] usable",
+                                  "kernel: RIP: 0010:foo+0xb43/0x1f0",
+                                  "kernel: ACPI: SSDT 0x00000000DB43A000 0004A4 (v02 INTEL)",
+                                  "kernel: BIOS-e820: [mem 0x0000000080211000-0x00000000802fffff] reserved"])
 def test_unrelated_words_do_not_match(line):
     assert not adapters.WIFI_LOG_PATTERN.search(line.lower())
