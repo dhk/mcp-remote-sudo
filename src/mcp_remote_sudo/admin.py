@@ -8,7 +8,6 @@ A rejected reload is rolled back automatically.
 from __future__ import annotations
 
 import argparse
-import difflib
 import fcntl
 import hashlib
 import json
@@ -26,6 +25,7 @@ import yaml
 
 from . import pack_install, packs
 from .authority import Authority, ManifestError
+from .proposals import ProposalError, diff_text, read_for_grant, review_warnings
 from .receipts import verify_chain
 
 DEFAULT_MANIFEST = "/etc/mcp-remote-sudo/authority.yaml"
@@ -62,18 +62,6 @@ def _external_operations(authority: Authority, registry: packs.Registry) -> list
 
 def _expires_in(authority: Authority) -> float:
     return (Authority._parse_time(authority.manifest["lifetime"]["notAfter"]) - now()).total_seconds()
-
-
-def _render(manifest: dict[str, Any]) -> list[str]:
-    return yaml.safe_dump(manifest, sort_keys=False, default_flow_style=False).splitlines(keepends=True)
-
-
-def diff_text(current: Authority | None, new: Authority) -> str:
-    before = _render(current.manifest) if current else []
-    out = "".join(difflib.unified_diff(before, _render(new.manifest), "active", "proposed"))
-    old_tools = current.allowed_tools if current else set()
-    added, removed = sorted(new.allowed_tools - old_tools), sorted(old_tools - new.allowed_tools)
-    return out + f"\noperations added: {added or 'none'}\noperations removed: {removed or 'none'}\n"
 
 
 class Admin:
@@ -126,8 +114,24 @@ class Admin:
     def diff(self, path: str) -> None:
         self.out.write(diff_text(self.current(), _load(path)))
 
+    def grant_proposal(self, proposal_id: str, sha256: str, *, yes: bool = False, timeout: float = 45.0) -> Authority:
+        state_dir = self.status_path.parent
+        try:
+            new = Authority(read_for_grant(state_dir, proposal_id, sha256))
+        except (ProposalError, ManifestError) as exc:
+            raise AdminError(str(exc)) from exc
+        # Recomputed from the verified bytes: never rely on warnings relayed by the agent.
+        warnings = review_warnings(new.manifest, self.registry)
+        self.say("review before granting:" if warnings else "review before granting: no warnings")
+        for w in warnings:
+            self.say(f"  ! {w}")
+        self.say(f"  expires: {new.manifest['lifetime']['notAfter']} (the clock started when the proposal was made)")
+        return self._grant(new, yes=yes, timeout=timeout)
+
     def grant(self, path: str, *, yes: bool = False, timeout: float = 45.0) -> Authority:
-        new = _load(path)
+        return self._grant(_load(path), yes=yes, timeout=timeout)
+
+    def _grant(self, new: Authority, *, yes: bool, timeout: float) -> Authority:
         if _expires_in(new) <= 0:
             raise AdminError("refusing to grant an already-expired authority")
         if self._session_mode() == "manifest":
@@ -412,8 +416,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     sub = p.add_subparsers(dest="command", required=True)
     sub.add_parser("validate", help="validate a manifest file").add_argument("file")
     sub.add_parser("diff", help="diff a manifest file against the active authority").add_argument("file")
-    g = sub.add_parser("grant", help="install a manifest as the active authority and reload")
-    g.add_argument("file"); g.add_argument("--yes", action="store_true"); g.add_argument("--timeout", type=float, default=45.0)
+    g = sub.add_parser("grant", help="install a manifest (file, or a reviewed proposal) as the active authority and reload")
+    g.add_argument("file", nargs="?"); g.add_argument("--proposal"); g.add_argument("--sha256")
+    g.add_argument("--yes", action="store_true"); g.add_argument("--timeout", type=float, default=45.0)
     r = sub.add_parser("revoke", help="replace the active authority with an expired deny-all authority")
     r.add_argument("--yes", action="store_true"); r.add_argument("--timeout", type=float, default=45.0)
     sub.add_parser("status", help="show the active authority and what the service has loaded")
@@ -431,7 +436,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if a.command == "validate": admin.validate(a.file)
         elif a.command == "diff": admin.diff(a.file)
-        elif a.command == "grant": admin.grant(a.file, yes=a.yes, timeout=a.timeout)
+        elif a.command == "grant":
+            if bool(a.file) == bool(a.proposal) or (a.proposal and not a.sha256):
+                raise AdminError("grant takes either FILE or --proposal ID --sha256 DIGEST")
+            if a.proposal: admin.grant_proposal(a.proposal, a.sha256, yes=a.yes, timeout=a.timeout)
+            else: admin.grant(a.file, yes=a.yes, timeout=a.timeout)
         elif a.command == "revoke": admin.revoke(yes=a.yes, timeout=a.timeout)
         elif a.command == "status": admin.status()
         elif a.command == "receipts": return 0 if admin.receipts_verify() else 1

@@ -43,6 +43,16 @@ PACK = TaskPack(
 - **Unknown operations fail closed.** If the active authority allows an operation that no installed pack provides, the
   server refuses to start.
 
+## Templates
+
+A pack can ship authority templates. `authority.propose` uses them as default constraints:
+
+```python
+TaskPack(..., templates={"read-only": {"description": "Bounded diagnostics.", "rules": {
+    "disk.usage": {"mount": {"enum": ["/", "/var"]}},
+}}})
+```
+
 ## Trust
 
 Installed packs are **not sandboxed**. An external pack's code runs in-process with the service's full privileges:
@@ -63,5 +73,5 @@ disk = "mcp_remote_disk.pack:PACK"
 The operator installs the distribution into the service's virtualenv. This becomes
 `mcp-remote-sudo-admin pack install` in #38. A grant then authorizes the specific operations.
 
-The built-in packs are `core` (`system.info`, `network.status`, `systemd.status`, `journal.query`, `journal.boots`, `receipts.tail`) and `wifi`
+The built-in packs are `core` (`system.info`, `network.status`, `systemd.status`, `journal.query`, `journal.boots`, `receipts.tail`, `authority.propose`) and `wifi`
 (`wifi.status`, `wifi.scan`, `wifi.link`, `wifi.driver.status`, `kernel.wifi.log`, `network.probe`).
