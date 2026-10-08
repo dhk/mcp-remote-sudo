@@ -152,7 +152,7 @@ current authority. **It grants nothing**: `expansion: prohibited` still holds. T
   client can't ask, the operation is refused, unless the grant explicitly says `confirmation: grant-only`.
 - **First remediation pack (#43).** `wifi-remediate` provides radio toggle, restart of an allowlisted unit, and reload
   of an allowlisted module. These are the recovery steps for the lobster pattern, from least to most invasive, and
-  every receipt records how to undo the change.
+  every receipt records the inverse operation where one exists (a service restart, for example, has none).
 
 ## 5. Plan and parallelism
 
@@ -163,7 +163,7 @@ or merge conflicts.
 |---|---|---|---|
 | Docs | #30, #31 | `docs/design/*`, `docs/research/*` | parallel with everything |
 | Installer | #36, then helper installation as part of #41 | `install/*`, `tests/test_installer.sh`, `docs/installation/*` | parallel with the runtime lane until #41 |
-| Runtime | #48 → #32 → #33 → #34 → #35 → #37 → #38 → #39 → #40 → #41 → #42 → #43 | `src/*`, `tests/*`, `pyproject.toml` | strictly one after another |
+| Runtime | #48 → #32 → #33 → #34 → #35 → #37 → #38 → #39 → #40 → #41 → #42 → #43 | `src/*`, `tests/*.py`, `pyproject.toml`, `docs/task-packs/*` | strictly one after another |
 
 Other rules:
 
