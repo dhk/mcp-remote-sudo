@@ -3,7 +3,7 @@
 The operator, not the agent, changes authority. Run these commands on the host, with sudo:
 
 ```bash
-A=/opt/mcp-remote-sudo/venv/bin/mcp-remote-sudo-admin
+A=/usr/local/sbin/mcp-remote-sudo-admin   # installed wrapper: runs the admin with python -I
 sudo $A status                       # active authority, what the service has loaded, service state
 sudo $A validate wifi-diag.yaml      # schema, expiry, operations
 sudo $A diff wifi-diag.yaml          # unified diff against the active authority, plus operations added and removed

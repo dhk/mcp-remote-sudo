@@ -183,6 +183,7 @@ INSTALL systemd unit: $UNIT
 BACKUP existing $MANIFEST to $MANIFEST.bak-<timestamp> (if present)
 INSTALL baseline authority: $MANIFEST
 GRANT journal read via systemd-journal group when present
+INSTALL operator command: /usr/local/sbin/mcp-remote-sudo-admin (isolated python -I)
 ENABLE and START: $SERVICE.service
 CONFIGURE ICMP echo sockets for group $SERVICE_USER only: $SYSCTL_DROPIN (skip with MCP_REMOTE_SUDO_ICMP=0)
 LISTEN: 127.0.0.1:$PORT only (port source: $PORT_SOURCE)
@@ -318,6 +319,16 @@ if [[ "$ICMP_STATUS" == enabled ]]; then
 elif [[ "$ICMP_STATUS" == disabled ]]; then
   remove_ping_dropin "$SERVICE_GID" || fail "icmp_sysctl_failed"
 fi
+
+# Operator entry point (#56): runs the admin in isolated mode (-I: no PYTHONPATH, no user site), so it never sees the
+# packs directory and never imports pack code as root.
+ADMIN_WRAPPER="/usr/local/sbin/mcp-remote-sudo-admin"
+install -d -o root -g root -m 0755 /usr/local/sbin
+cat >"$ADMIN_WRAPPER.tmp" <<EOF
+#!/bin/sh
+exec $PREFIX/venv/bin/python -I -m mcp_remote_sudo.admin "\$@"
+EOF
+chown root:root "$ADMIN_WRAPPER.tmp"; chmod 0755 "$ADMIN_WRAPPER.tmp"; mv -f "$ADMIN_WRAPPER.tmp" "$ADMIN_WRAPPER"
 
 systemctl daemon-reload
 systemctl enable "$SERVICE.service"

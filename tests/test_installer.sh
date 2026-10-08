@@ -35,6 +35,12 @@ refute grep -q '^    arguments:$' "$INSTALL"
 # Installed lifecycle scripts must support direct execution.
 grep -Fq 'chmod 0755 "$PREFIX/src/install/bootstrap.sh" "$PREFIX/src/install/install.sh" "$PREFIX/src/install/uninstall.sh"' "$INSTALL"
 
+# Operator wrapper (#56): isolated interpreter, root-owned, removed on uninstall.
+wrapper="$(sed -n '/^cat >"\$ADMIN_WRAPPER.tmp" <<EOF$/,/^EOF$/p' "$INSTALL")"
+grep -qxF 'exec $PREFIX/venv/bin/python -I -m mcp_remote_sudo.admin "\$@"' <<<"$wrapper" || { echo "FAIL: admin wrapper must exec python -I -m mcp_remote_sudo.admin"; exit 1; }
+grep -qF 'chown root:root "$ADMIN_WRAPPER.tmp"; chmod 0755 "$ADMIN_WRAPPER.tmp"' "$INSTALL"
+grep -qx 'rm -f /usr/local/sbin/mcp-remote-sudo-admin' "$UNINSTALL"
+
 # Source-level safety assertions for the bootstrap script.
 refute grep -Eq '0\.0\.0\.0|NOPASSWD: *ALL|chmod +777|shell=True' "$INSTALL"
 grep -q 'NoNewPrivileges=true' "$INSTALL"
