@@ -501,7 +501,7 @@ There should be no undocumented third state.
 unprivileged service is refused by default. Reinstall with `MCP_REMOTE_SUDO_WIFI_RESCAN=1` to install
 `/etc/polkit-1/rules.d/60-mcp-remote-sudo-wifi-scan.rules`. That rule grants exactly that one action, to exactly the
 `mcp-remote-sudo` user. Setting `MCP_REMOTE_SUDO_WIFI_RESCAN=0` removes the rule, and leaving it unset keeps the current
-state. The installer reports `wifi_rescan: enabled|disabled|unchanged`.
+state. The installer reports `wifi_rescan: enabled|disabled|unchanged|unavailable` (`unavailable`: polkit is not installed, so nothing was written). An invalid value fails before anything is changed.
 
 Even with the rule, a forced rescan needs a grant whose `wifi.scan` rule constrains `rescan`, because `rescan` is a gated
 argument. A forced scan can briefly disturb a marginal link.
