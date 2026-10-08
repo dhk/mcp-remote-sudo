@@ -17,14 +17,37 @@ def run(argv: Sequence[str], timeout: int=15, max_stdout: int=20000)->dict:
 def system_info()->dict: return {"uname":run(["uname","-a"]),"os_release":run(["cat","/etc/os-release"])}
 def network_status()->dict: return {"ip":run(["ip","-json","address"]),"routes":run(["ip","-json","route"])}
 def wifi_status()->dict: return {"nmcli":run(["nmcli","-t","-f","DEVICE,TYPE,STATE,CONNECTION","device","status"])}
-def wifi_scan()->dict: return {"nmcli":run(["nmcli","-t","-f","SSID,BSSID,SIGNAL,SECURITY","device","wifi","list"])}
+def wifi_scan(rescan:bool=False)->dict:
+    """Visible networks. rescan=True forces a fresh scan (proves results are not cached); default lets NetworkManager decide."""
+    if not isinstance(rescan,bool): raise ValueError("rescan must be a boolean")
+    return {"nmcli":run(["nmcli","-t","-f","SSID,BSSID,CHAN,FREQ,SIGNAL,SECURITY","device","wifi","list",*(["--rescan","yes"] if rescan else [])],timeout=30)}
+
+def wifi_link()->dict:
+    """The associated access point(s): BSSID, channel, frequency, rate, signal. Never triggers a scan."""
+    result=run(["nmcli","-t","-f","IN-USE,DEVICE,SSID,BSSID,CHAN,FREQ,RATE,SIGNAL,SECURITY","device","wifi","list","--rescan","no"])
+    active=[line for line in result["stdout"].splitlines() if line.startswith("*:")]
+    return {"nmcli":{**result,"stdout":"\n".join(active)},"associated":bool(active)}
+
+SYSFS=Path("/sys")
+PCI_ADDRESS=re.compile(r"^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]$")
+
+def _read_sysfs(path:Path)->str|None:
+    try: return path.read_text().strip()
+    except OSError: return None
 
 def wifi_driver_status(module:str)->dict:
+    """Module state from sysfs. modinfo is not used: ProtectKernelModules= hides /usr/lib/modules from the service."""
     if not MODULE.fullmatch(module): raise ValueError("invalid kernel module")
+    mod=SYSFS/"module"/module
+    devices=sorted(d.name for d in (SYSFS/"bus"/"pci"/"drivers"/module).glob("*") if PCI_ADDRESS.fullmatch(d.name))
+    interfaces=sorted(n.name for n in (SYSFS/"class"/"net").glob("*") if (n/"device"/"driver").is_symlink()
+                      and (n/"device"/"driver").resolve().name==module)
     return {
         "kernel":run(["uname","-r"]),
-        "loaded":(Path("/sys/module") / module).is_dir(),
-        "modinfo":run(["modinfo","--",module]),
+        "loaded":mod.is_dir(),
+        "module":{k:_read_sysfs(mod/k) for k in ("version","srcversion","taint","refcnt","initstate")},
+        "pci_devices":devices,
+        "interfaces":interfaces,
     }
 
 def connectivity_probe(target:str,count:int=4)->dict:
