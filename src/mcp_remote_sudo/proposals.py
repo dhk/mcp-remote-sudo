@@ -90,12 +90,13 @@ def review_warnings(manifest: dict[str, Any], registry: Registry) -> list[str]:
             warnings.append(f"{name} is a mutating operation (confirmation: {rule.get('confirmation', 'operator')})")
         for p in op.params:
             spec = args.get(p.name)
-            scalar = p.type in (str, int, float, bool) or getattr(p.type, "__args__", ()) and all(
-                t in (str, int, float, bool, type(None)) for t in p.type.__args__)
+            kinds = {t for t in (getattr(p.type, "__args__", None) or (p.type,)) if t is not type(None)}
+            scalar = bool(kinds) and kinds <= {str, int, float, bool}
+            numeric = bool(kinds) and kinds <= {int, float}   # Optional[int] counts too
             if spec is None:
                 if scalar and not op.needs_runtime:   # only parameters the constraint grammar can meaningfully bound
                     warnings.append(f"{name}.{p.name} is unconstrained")
-            elif isinstance(spec, dict) and p.type in (int, float) and "enum" not in spec and ("minimum" not in spec or "maximum" not in spec):
+            elif isinstance(spec, dict) and numeric and "enum" not in spec and ("minimum" not in spec or "maximum" not in spec):
                 warnings.append(f"{name}.{p.name} has a one-sided bound {spec}")
             if spec is not None:
                 template = template_constraints(registry, name).get(p.name)

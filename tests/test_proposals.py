@@ -194,3 +194,11 @@ def test_a_templated_read_only_proposal_has_no_noise():
                          operations=["system.info", "kernel.wifi.log", "receipts.tail"], constraints=None)
     assert [w for w in warnings if "authority.propose" in w] == []
     assert not any("receipts.tail" in w for w in warnings)
+
+
+def test_one_sided_bounds_on_optional_ints_are_flagged():
+    _, warnings = render(registry=REG, active=active(), purpose="p", ttl_minutes=60, operations=["journal.query"],
+                         constraints={"journal.query": {"unit": {"enum": ["NetworkManager.service"]},
+                                                        "since_minutes": {"minimum": 1}, "boot": {"maximum": 0}}})
+    assert any("journal.query.since_minutes has a one-sided bound" in w for w in warnings)
+    assert any("journal.query.boot has a one-sided bound" in w for w in warnings)
