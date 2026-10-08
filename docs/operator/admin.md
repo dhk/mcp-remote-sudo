@@ -21,7 +21,9 @@ sudo $A pack list                    # built-in packs and which operations are e
 3. **Back up** the current authority to `authority.yaml.bak-<UTC timestamp>`, then install the new one atomically
    (temporary file, fsync, rename).
 4. **Reload** by sending SIGHUP to the service (`systemctl kill --kill-whom=main --signal=HUP`). The service reloads
-   in place: there's no restart, and connected clients keep their sessions.
+   in place: there's no restart, and connected clients keep their sessions. Clients must list tools again, or
+   reconnect, to *see* newly granted tools, because no `tools/list_changed` notification is sent. Removed tools are
+   denied immediately either way: every call is checked against the active authority.
 5. **Confirm** by reading `/var/lib/mcp-remote-sudo/authority-status.json` until the service reports the new manifest
    hash.
 

@@ -203,3 +203,42 @@ def test_an_unrelated_successful_reload_is_not_mistaken_for_confirmation(tmp_pat
     monkeypatch.setattr(admin_mod,"run",fake_run)
     new=h.admin.grant(str(h.write_candidate(tmp_path,manifest(["system.info"],id="real"))),yes=True,timeout=2)
     assert h.runtime.authority.manifest_hash==new.manifest_hash
+
+
+def test_a_rejection_of_some_other_manifest_is_not_this_grants_verdict(tmp_path, monkeypatch):
+    """Regression (review of #62): a stale ok:false for an earlier manifest must not roll back the new grant."""
+    h=Host(tmp_path,monkeypatch)
+    def fake_run(argv):
+        if list(argv)[:2]==["systemctl","kill"]:
+            st=json.loads((h.state/"authority-status.json").read_text())
+            st.update({"ok":False,"error":"earlier manifest Y rejected","attempted_hash":"Y","attempted_file_sha256":"Y","at":"later"})
+            (h.state/"authority-status.json").write_text(json.dumps(st))
+        class R: returncode=0; stdout=""; stderr=""
+        return R()
+    monkeypatch.setattr(admin_mod,"run",fake_run)
+    cand=h.write_candidate(tmp_path,manifest(["system.info"],id="x"))
+    with pytest.raises(AdminError, match="has not confirmed"):
+        h.admin.grant(str(cand),yes=True,timeout=0.5)
+    assert yaml.safe_load(h.manifest.read_text())["metadata"]["id"]=="x"      # not "restored"
+
+
+def test_rejected_revoke_says_so_and_points_to_stopping_the_service(tmp_path, monkeypatch):
+    h=Host(tmp_path,monkeypatch)
+    def fake_run(argv):
+        if list(argv)[:2]==["systemctl","kill"]:
+            h.reloader.reload()
+        class R: returncode=0; stdout=""; stderr=""
+        return R()
+    monkeypatch.setattr(admin_mod,"run",fake_run)
+    def reject(names): raise packs.PackError("simulated: the service refuses exactly this manifest")
+    monkeypatch.setattr(h.reloader.registry,"require",reject)
+    with pytest.raises(AdminError, match="REJECTED.*systemctl stop"):
+        h.admin.revoke(yes=True,timeout=2)
+    assert h.tools()=={"system_info","network_status"}       # the service kept the old authority, as reported
+
+
+def test_warns_when_the_file_on_disk_is_not_what_the_service_runs(tmp_path, monkeypatch):
+    h=Host(tmp_path,monkeypatch)
+    h.manifest.write_text(yaml.safe_dump(manifest(["system.info"],id="disk-only")))   # never loaded
+    h.admin.grant(str(h.write_candidate(tmp_path,manifest(["system.info"],id="g"))),yes=True,timeout=2)
+    assert "is not what the service runs" in h.out.getvalue()

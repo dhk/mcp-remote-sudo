@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
 import json
 import os
 import subprocess
@@ -173,9 +174,14 @@ class Admin:
         self.out.write(diff_text(current, new))
         if not yes and input(f"{action} this authority? [y/N] ").strip().lower() not in ("y", "yes"):
             raise AdminError("aborted by operator")
+        st = self.read_status()
+        if current is not None and st and st.get("manifest_hash") != current.manifest_hash:
+            self.say(f"warning: {self.manifest} ({current.manifest_hash}) is not what the service runs "
+                     f"({st.get('manifest_hash')}); the backup will hold the file on disk, not the running authority")
         backup = self._backup() if current is not None else None
         self._atomic_write(new.manifest)
-        outcome, detail = self._reload_and_confirm(new.manifest_hash, timeout)
+        written = hashlib.sha256(self.manifest.read_bytes()).hexdigest()
+        outcome, detail = self._reload_and_confirm(new.manifest_hash, timeout, written)
         if outcome == "loaded":
             self.say(f"{action}: active authority is now {new.manifest['metadata']['id']} ({new.manifest_hash})"
                      + (f"; previous saved to {backup}" if backup else ""))
@@ -188,6 +194,12 @@ class Admin:
             except AdminError:
                 pass  # the restored file is what the service already runs and what it will load at next start
             raise AdminError(f"service rejected the new authority ({detail}); restored {self.manifest} from backup")
+        if outcome == "rejected":
+            running = (self.read_status() or {}).get("manifest_hash")
+            hint = " To stop all access now, stop the service: systemctl stop " + self.service if action == "revoke" else ""
+            raise AdminError(f"{action}: the service REJECTED {new.manifest['metadata']['id']} ({detail}) and still runs "
+                             f"{running}; {self.manifest} was left installed and will fail again at the next reload or "
+                             f"start until fixed.{hint}")
         # Unconfirmed (busy service, timeout, or signal failure): never roll back. In particular a revoke must stay
         # installed — restoring the previous authority would undo the operator's revocation.
         raise AdminError(f"{action}: {self.manifest} now holds {new.manifest['metadata']['id']} ({new.manifest_hash}), "
@@ -216,7 +228,7 @@ class Admin:
         if r.returncode != 0:
             raise AdminError(f"could not signal {self.service}: {r.stderr.strip() or r.returncode}")
 
-    def _reload_and_confirm(self, expected_hash: str, timeout: float) -> tuple[str, str]:
+    def _reload_and_confirm(self, expected_hash: str, timeout: float, file_sha256: str | None = None) -> tuple[str, str]:
         """("loaded" | "rejected" | "pending", detail). Only a status newer than the signal counts."""
         before = (self.read_status() or {}).get("at")
         try:
@@ -229,7 +241,9 @@ class Admin:
             if st and st.get("at") != before:
                 if st.get("ok") and st.get("manifest_hash") == expected_hash:
                     return "loaded", "loaded"
-                if not st.get("ok"):
+                if not st.get("ok") and (st.get("attempted_hash") == expected_hash
+                                         or (file_sha256 and st.get("attempted_file_sha256") == file_sha256)):
+                    # A verdict about exactly the bytes we wrote — not some other, earlier manifest.
                     return "rejected", st.get("error") or "reload rejected"
                 before = st.get("at")   # a different successful reload (e.g. a queued earlier signal): keep waiting
             time.sleep(0.2)

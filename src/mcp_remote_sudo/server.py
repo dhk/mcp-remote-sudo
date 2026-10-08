@@ -1,5 +1,6 @@
 from __future__ import annotations
-import argparse, asyncio, functools, inspect, json, logging, os, signal, socket
+import argparse, asyncio, functools, hashlib, inspect, json, logging, os, signal, socket
+import yaml
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -56,9 +57,13 @@ class AuthorityReloader:
         self.runtime.receipts.write({"manifest_id":md["id"],"manifest_version":md.get("version"),"manifest_hash":authority.manifest_hash,
             "agent":self.runtime.agent,"session":self.runtime.session,"host":self.runtime.host,"tool":"authority.reload",
             "arguments":{},"decision":"operator","result":result,**extra})
-    def write_status(self,ok:bool,error:str|None=None)->dict:
+    def write_status(self,ok:bool,error:str|None=None,attempted_hash:str|None=None,attempted_file_sha256:str|None=None)->dict:
         a=self.runtime.authority
+        # attempted_hash: the manifest this status is about (None when the file couldn't even be parsed), so the
+        # admin never mistakes a rejection of some other manifest for a verdict on its own grant.
         status={"ok":ok,"manifest_id":a.manifest["metadata"]["id"],"manifest_hash":a.manifest_hash,
+                "attempted_hash":attempted_hash if attempted_hash is not None or not ok else a.manifest_hash,
+                "attempted_file_sha256":attempted_file_sha256,
                 "not_after":a.manifest["lifetime"]["notAfter"],"tools":sorted(self.exposed),
                 "at":datetime.now(timezone.utc).isoformat(),"error":error}
         if self.status_path:
@@ -68,23 +73,26 @@ class AuthorityReloader:
             except OSError as exc: log.warning("cannot write authority status %s: %s",self.status_path,exc)
         return status
     def reload(self)->dict:
-        old=self.runtime.authority
+        old=self.runtime.authority; attempted:str|None=None; file_sha:str|None=None
         try:
-            new=Authority.load(self.manifest_path)
+            data=self.manifest_path.read_bytes(); file_sha=hashlib.sha256(data).hexdigest()
+            parsed=yaml.safe_load(data)
+            if not isinstance(parsed,dict): raise ValueError("manifest must be a mapping")
+            new=Authority(parsed); attempted=new.manifest_hash
             binding=new.check_binding(agent=self.runtime.agent,session=self.runtime.session,host=self.runtime.host)
             if not binding.allowed: raise ValueError(binding.reason)
             ops={op.tool:op for op in self.registry.require(new.allowed_tools)}
         except Exception as exc:
             error=f"{type(exc).__name__}: {exc}"; log.error("authority reload rejected; keeping %s: %s",old.manifest_hash,error)
             self._receipt(old,"failed",error=error,rejected_manifest=str(self.manifest_path))
-            return self.write_status(False,error)
+            return self.write_status(False,error,attempted_hash=attempted,attempted_file_sha256=file_sha)
         self.runtime.authority=new
         for name in set(self.exposed)-set(ops): self.mcp.remove_tool(name)
         for name in set(ops)-set(self.exposed): self.mcp.add_tool(_tool_function(self.runtime,ops[name]),name=name,description=ops[name].description)
         self.exposed=ops
         self._receipt(new,"success",previous_manifest_hash=old.manifest_hash)
         log.info("authority reloaded: %s -> %s",old.manifest_hash,new.manifest_hash)
-        return self.write_status(True)
+        return self.write_status(True,attempted_hash=new.manifest_hash,attempted_file_sha256=file_sha)
 
 def main()->None:
     p=argparse.ArgumentParser(); p.add_argument("--manifest",required=True); p.add_argument("--agent",required=True); p.add_argument("--session",required=True); p.add_argument("--host",default=socket.gethostname()); p.add_argument("--receipts",default=os.environ.get("MCP_REMOTE_SUDO_RECEIPTS","./receipts.jsonl")); p.add_argument("--port",type=int,default=8765); p.add_argument("--state-dir",default=os.environ.get("MCP_REMOTE_SUDO_STATE_DIR","/var/lib/mcp-remote-sudo")); a=p.parse_args()
