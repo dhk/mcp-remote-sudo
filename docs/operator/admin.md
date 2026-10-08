@@ -16,7 +16,7 @@ sudo $A pack list                    # built-in packs and which operations are e
 ## How `grant` works
 
 1. **Validate** the manifest. It must not already be expired, and its binding (agent, session, host) must match the
-   running service.
+   active manifest's binding. The service also enforces the binding at reload.
 2. **Show** the diff and the operations added and removed, then ask for confirmation. `--yes` skips the prompt.
 3. **Back up** the current authority to `authority.yaml.bak-<UTC timestamp>`, then install the new one atomically
    (temporary file, fsync, rename).
@@ -25,14 +25,24 @@ sudo $A pack list                    # built-in packs and which operations are e
 5. **Confirm** by reading `/var/lib/mcp-remote-sudo/authority-status.json` until the service reports the new manifest
    hash.
 
-If the service rejects the new authority, it keeps the previous one. That happens on a validation error, a binding
-mismatch, or an operation that no installed pack provides. `grant` then restores the backup, reloads again and exits
-non-zero. Every reload, whether accepted or rejected, writes an `authority.reload` receipt.
+What happens next depends on the service's answer:
+
+- **It rejects the new authority.** That happens on a validation error, a binding mismatch, or an operation that no
+  installed pack provides. The service keeps its previous authority, and `grant` restores the backup and exits
+  non-zero.
+- **It doesn't confirm in time.** By default the wait is 45s, longer than any tool's own timeout. Tool calls run on the
+  service's event loop, so a reload waits for the call that's running.
+- **The signal can't be delivered**, for example because the service is stopped.
+
+In the last two cases the new file **stays installed**. The command exits non-zero and says so, and the authority
+applies when the service processes the reload or next starts. **A `revoke` is never rolled back.**
+
+Every reload, accepted or rejected, writes an `authority.reload` receipt.
 
 ## Safety notes
 
 - The admin command runs as root, so it **never imports external pack code**. It only knows the built-in packs.
   Operations from external packs are checked by the unprivileged service at reload, and a failed check means
   automatic rollback.
-- `revoke` keeps the binding and sets `notAfter` to now. The service then exposes no tools, and any invocation that
-  was already in flight is denied as `manifest_expired`.
+- `revoke` keeps the binding and sets `notAfter` to now. A call that's already running finishes under the previous
+  authority. After the reload the service exposes no tools, so new calls fail as unknown tools.

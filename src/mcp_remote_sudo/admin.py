@@ -106,13 +106,13 @@ class Admin:
     def diff(self, path: str) -> None:
         self.out.write(diff_text(self.current(), _load(path)))
 
-    def grant(self, path: str, *, yes: bool = False, timeout: float = 10.0) -> Authority:
+    def grant(self, path: str, *, yes: bool = False, timeout: float = 45.0) -> Authority:
         new = _load(path)
         if _expires_in(new) <= 0:
             raise AdminError("refusing to grant an already-expired authority")
         return self._install(new, yes=yes, timeout=timeout, action="grant")
 
-    def revoke(self, *, yes: bool = False, timeout: float = 10.0) -> Authority:
+    def revoke(self, *, yes: bool = False, timeout: float = 45.0) -> Authority:
         current = self.current()
         if current is None:
             raise AdminError(f"no active authority at {self.manifest}")
@@ -169,22 +169,31 @@ class Admin:
     def _install(self, new: Authority, *, yes: bool, timeout: float, action: str) -> Authority:
         current = self.current()
         if current is not None and new.manifest["binding"] != current.manifest["binding"]:
-            raise AdminError(f"binding {new.manifest['binding']} does not match the service binding {current.manifest['binding']}")
+            raise AdminError(f"binding {new.manifest['binding']} does not match the active manifest's binding {current.manifest['binding']}")
         self.out.write(diff_text(current, new))
         if not yes and input(f"{action} this authority? [y/N] ").strip().lower() not in ("y", "yes"):
             raise AdminError("aborted by operator")
         backup = self._backup() if current is not None else None
         self._atomic_write(new.manifest)
-        ok, detail = self._reload_and_confirm(new.manifest_hash, timeout)
-        if ok:
+        outcome, detail = self._reload_and_confirm(new.manifest_hash, timeout)
+        if outcome == "loaded":
             self.say(f"{action}: active authority is now {new.manifest['metadata']['id']} ({new.manifest_hash})"
                      + (f"; previous saved to {backup}" if backup else ""))
             return new
-        if backup is not None:
+        if outcome == "rejected" and action == "grant" and backup is not None:
+            # Only an explicit rejection by the service rolls a grant back; the service kept its previous authority.
             os.replace(backup, self.manifest)
-            self._signal_reload()
-            raise AdminError(f"service did not load the new authority ({detail}); restored {self.manifest} from backup")
-        raise AdminError(f"service did not load the new authority ({detail})")
+            try:
+                self._signal_reload()
+            except AdminError:
+                pass  # the restored file is what the service already runs and what it will load at next start
+            raise AdminError(f"service rejected the new authority ({detail}); restored {self.manifest} from backup")
+        # Unconfirmed (busy service, timeout, or signal failure): never roll back. In particular a revoke must stay
+        # installed — restoring the previous authority would undo the operator's revocation.
+        raise AdminError(f"{action}: {self.manifest} now holds {new.manifest['metadata']['id']} ({new.manifest_hash}), "
+                         f"but the service has not confirmed loading it ({detail}). It will apply when the service "
+                         f"processes the reload or next starts; check `status`."
+                         + (f" Previous saved to {backup}." if backup else ""))
 
     def _backup(self) -> Path:
         ts = now().strftime("%Y%m%dT%H%M%SZ")
@@ -207,19 +216,24 @@ class Admin:
         if r.returncode != 0:
             raise AdminError(f"could not signal {self.service}: {r.stderr.strip() or r.returncode}")
 
-    def _reload_and_confirm(self, expected_hash: str, timeout: float) -> tuple[bool, str]:
+    def _reload_and_confirm(self, expected_hash: str, timeout: float) -> tuple[str, str]:
+        """("loaded" | "rejected" | "pending", detail). Only a status newer than the signal counts."""
         before = (self.read_status() or {}).get("at")
-        self._signal_reload()
+        try:
+            self._signal_reload()
+        except AdminError as exc:
+            return "pending", str(exc)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             st = self.read_status()
             if st and st.get("at") != before:
                 if st.get("ok") and st.get("manifest_hash") == expected_hash:
-                    return True, "loaded"
-                return False, st.get("error") or f"service reports {st.get('manifest_hash')}"
+                    return "loaded", "loaded"
+                if not st.get("ok"):
+                    return "rejected", st.get("error") or "reload rejected"
+                before = st.get("at")   # a different successful reload (e.g. a queued earlier signal): keep waiting
             time.sleep(0.2)
-        return False, f"no reload confirmation from {self.status_path} within {timeout:g}s"
-
+        return "pending", f"no reload confirmation from {self.status_path} within {timeout:g}s (service busy?)"
 
 def main(argv: Sequence[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="mcp-remote-sudo-admin", description=__doc__.splitlines()[0])
@@ -231,9 +245,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     sub.add_parser("validate", help="validate a manifest file").add_argument("file")
     sub.add_parser("diff", help="diff a manifest file against the active authority").add_argument("file")
     g = sub.add_parser("grant", help="install a manifest as the active authority and reload")
-    g.add_argument("file"); g.add_argument("--yes", action="store_true"); g.add_argument("--timeout", type=float, default=10.0)
+    g.add_argument("file"); g.add_argument("--yes", action="store_true"); g.add_argument("--timeout", type=float, default=45.0)
     r = sub.add_parser("revoke", help="replace the active authority with an expired deny-all authority")
-    r.add_argument("--yes", action="store_true"); r.add_argument("--timeout", type=float, default=10.0)
+    r.add_argument("--yes", action="store_true"); r.add_argument("--timeout", type=float, default=45.0)
     sub.add_parser("status", help="show the active authority and what the service has loaded")
     rc = sub.add_parser("receipts", help="receipt operations"); rc_sub = rc.add_subparsers(dest="receipts_command", required=True)
     rc_sub.add_parser("verify", help="verify the receipt hash chain")

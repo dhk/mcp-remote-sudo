@@ -88,7 +88,7 @@ def test_grant_rolls_back_when_service_rejects(tmp_path, monkeypatch):
     h=Host(tmp_path,monkeypatch); original=h.manifest.read_text(); before=h.runtime.authority.manifest_hash
     # An operation no installed pack provides: the admin can't know (it never imports external packs); the service can.
     cand=h.write_candidate(tmp_path,manifest(["system.info","example.external"],id="bad"))
-    with pytest.raises(AdminError, match="restored"):
+    with pytest.raises(AdminError, match="rejected the new authority.*restored"):
         h.admin.grant(str(cand),yes=True,timeout=2)
     assert h.manifest.read_text()==original and h.runtime.authority.manifest_hash==before
     assert sum(1 for s in h.signals if s[:2]==["systemctl","kill"])==2   # reload attempt + reload after restore
@@ -96,7 +96,7 @@ def test_grant_rolls_back_when_service_rejects(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("m,match", [
     (manifest(["system.info"],not_after="2020-01-01T00:00:00Z"), "already-expired"),
-    (manifest(["system.info"],binding={**BINDING,"host":"elsewhere"}), "does not match the service binding"),
+    (manifest(["system.info"],binding={**BINDING,"host":"elsewhere"}), "does not match the active manifest's binding"),
 ])
 def test_grant_refuses_expired_or_misbound(tmp_path, monkeypatch, m, match):
     h=Host(tmp_path,monkeypatch); before=h.manifest.read_text()
@@ -148,3 +148,58 @@ def test_main_exit_codes(tmp_path, monkeypatch, capsys):
     assert admin_mod.main([*common,"validate",str(h.manifest)])==0
     assert admin_mod.main([*common,"validate",str(tmp_path/"missing.yaml")])==1
     assert "error:" in capsys.readouterr().err
+
+
+
+def make_busy(h, monkeypatch, signal_ok=True):
+    """systemctl accepts (or refuses) the signal but the service never processes it within the wait."""
+    def fake_run(argv):
+        argv=list(argv); h.signals.append(argv)
+        class R: returncode=0 if signal_ok else 1; stdout=""; stderr="" if signal_ok else "Unit not loaded."
+        return R()
+    monkeypatch.setattr(admin_mod,"run",fake_run)
+
+
+def test_unconfirmed_revoke_is_never_rolled_back(tmp_path, monkeypatch):
+    """Regression (review of #62): a busy service used to make revoke restore the previous authority."""
+    h=Host(tmp_path,monkeypatch); make_busy(h,monkeypatch)
+    with pytest.raises(AdminError, match="has not confirmed loading it"):
+        h.admin.revoke(yes=True,timeout=0.5)
+    on_disk=yaml.safe_load(h.manifest.read_text())
+    assert on_disk["allow"]==[] and on_disk["metadata"]["id"].startswith("revoked-")
+    h.reloader.reload()                                          # the service gets to the queued SIGHUP later
+    assert h.tools()==set()
+
+
+def test_unconfirmed_grant_stays_installed_and_applies_later(tmp_path, monkeypatch):
+    h=Host(tmp_path,monkeypatch); make_busy(h,monkeypatch)
+    cand=h.write_candidate(tmp_path,manifest(["system.info","wifi.status"],id="later"))
+    with pytest.raises(AdminError, match="pending|has not confirmed"):
+        h.admin.grant(str(cand),yes=True,timeout=0.5)
+    assert yaml.safe_load(h.manifest.read_text())["metadata"]["id"]=="later"
+    h.reloader.reload(); assert "wifi_status" in h.tools()
+
+
+def test_signal_failure_reports_that_the_file_is_installed(tmp_path, monkeypatch):
+    h=Host(tmp_path,monkeypatch); make_busy(h,monkeypatch,signal_ok=False)
+    cand=h.write_candidate(tmp_path,manifest(["system.info"],id="unsignalled"))
+    with pytest.raises(AdminError, match="now holds unsignalled.*could not signal"):
+        h.admin.grant(str(cand),yes=True,timeout=0.5)
+    assert yaml.safe_load(h.manifest.read_text())["metadata"]["id"]=="unsignalled"
+
+
+def test_an_unrelated_successful_reload_is_not_mistaken_for_confirmation(tmp_path, monkeypatch):
+    h=Host(tmp_path,monkeypatch)
+    real=admin_mod.run
+    calls={"n":0}
+    def fake_run(argv):
+        argv=list(argv)
+        if argv[:2]==["systemctl","kill"]:
+            calls["n"]+=1
+            h.reloader.write_status(True)        # a stale/queued reload of the old authority lands first...
+            h.reloader.reload()                  # ...then the real one
+        class R: returncode=0; stdout=""; stderr=""
+        return R()
+    monkeypatch.setattr(admin_mod,"run",fake_run)
+    new=h.admin.grant(str(h.write_candidate(tmp_path,manifest(["system.info"],id="real"))),yes=True,timeout=2)
+    assert h.runtime.authority.manifest_hash==new.manifest_hash
