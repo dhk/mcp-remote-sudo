@@ -1,4 +1,6 @@
 """Built-in ``core`` pack: host, network and systemd read-only diagnostics."""
+from typing import Optional
+
 from .. import adapters
 from . import Operation, Param, TaskPack
 
@@ -15,8 +17,14 @@ PACK = TaskPack(
                   (Param("unit", str),),
                   description="systemctl show for one unit."),
         Operation("journal.query", "journal_query", adapters.journal_query,
-                  (Param("unit", str), Param("lines", int, 100)),
-                  description="Last N journal lines for one unit.",
+                  (Param("unit", str), Param("lines", int, 100),
+                   Param("boot", Optional[int], None), Param("since_minutes", Optional[int], None)),
+                  description="Last N journal lines for one unit; optionally one boot (0 current, -1 previous) "
+                              "and/or the last N minutes.",
+                  privileges=("journal-read",)),
+        Operation("journal.boots", "journal_boots", adapters.journal_boots,
+                  (Param("limit", int, 20),),
+                  description="Most recent boots with first/last journal entry.",
                   privileges=("journal-read",)),
     ),
 )

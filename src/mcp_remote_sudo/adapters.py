@@ -1,5 +1,6 @@
 from __future__ import annotations
 import re, subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Sequence
 
@@ -45,7 +46,30 @@ def systemd_status(unit:str)->dict:
     if not UNIT.fullmatch(unit): raise ValueError("invalid systemd unit")
     return {"systemctl":run(["systemctl","show",unit,"--no-pager"])}
 
-def journal_query(unit:str,lines:int=100)->dict:
+MAX_BOOT_OFFSET=1000
+MAX_SINCE_MINUTES=7*24*60
+
+def _int_in(value,lo,hi,what)->int:
+    if not isinstance(value,int) or isinstance(value,bool) or value<lo or value>hi: raise ValueError(f"{what} must be between {lo} and {hi}")
+    return value
+
+def journal_window(boot:int|None=None,since_minutes:int|None=None)->list[str]:
+    """journalctl arguments selecting a boot (0 = current, -1 = previous, ...) and/or the last N minutes."""
+    argv=[]
+    if boot is not None: argv+=["-b",str(_int_in(boot,-MAX_BOOT_OFFSET,0,"boot"))]
+    if since_minutes is not None:
+        start=datetime.now(timezone.utc)-timedelta(minutes=_int_in(since_minutes,1,MAX_SINCE_MINUTES,"since_minutes"))
+        argv+=["--since",start.strftime("%Y-%m-%d %H:%M:%S UTC")]
+    return argv
+
+def journal_query(unit:str,lines:int=100,boot:int|None=None,since_minutes:int|None=None)->dict:
     if not UNIT.fullmatch(unit): raise ValueError("invalid systemd unit")
-    if not isinstance(lines,int) or isinstance(lines,bool) or lines<1 or lines>500: raise ValueError("lines must be between 1 and 500")
-    return {"journalctl":run(["journalctl","-u",unit,"-n",str(lines),"--no-pager","-o","short-iso"])}
+    _int_in(lines,1,500,"lines")
+    return {"journalctl":run(["journalctl","-u",unit,"-n",str(lines),*journal_window(boot,since_minutes),"--no-pager","-o","short-iso"])}
+
+def journal_boots(limit:int=20)->dict:
+    _int_in(limit,1,100,"limit")
+    result=run(["journalctl","--list-boots","--no-pager"])
+    rows=result["stdout"].splitlines()
+    header,boots=(rows[:1],rows[1:]) if rows and rows[0].lstrip().startswith("IDX") else ([],rows)
+    return {"journalctl":{**result,"stdout":"\n".join(header+boots[-limit:])}}
