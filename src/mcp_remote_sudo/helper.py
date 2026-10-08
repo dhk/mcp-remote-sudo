@@ -27,6 +27,7 @@ from typing import Any, Callable
 
 import yaml
 
+from . import approvals
 from .authority import Authority, ManifestError
 from .receipts import ReceiptWriter
 
@@ -42,6 +43,7 @@ class HelperOperation:
     name: str
     run: Callable[..., dict]
     params: dict[str, type]
+    confirm: bool = True    # host-changing operations honour the rule's confirmation mode (default: operator)
 
 
 def _ping() -> dict:
@@ -50,7 +52,7 @@ def _ping() -> dict:
 
 # The helper's own operation table. Mutation packs (#43) add entries here — never via the request.
 OPERATIONS: dict[str, HelperOperation] = {
-    "helper.ping": HelperOperation("helper.ping", _ping, {}),
+    "helper.ping": HelperOperation("helper.ping", _ping, {}, confirm=False),
 }
 
 
@@ -67,8 +69,8 @@ def peer_uid(conn: socket.socket) -> int:
 
 class Helper:
     def __init__(self, *, manifest: str | Path, receipts: str | Path, allowed_uid: int,
-                 operations: dict[str, HelperOperation] | None = None):
-        self.manifest = Path(manifest); self.allowed_uid = allowed_uid
+                 operations: dict[str, HelperOperation] | None = None, approvals_dir: str | Path = approvals.APPROVALS_DIR):
+        self.manifest = Path(manifest); self.allowed_uid = allowed_uid; self.approvals_dir = Path(approvals_dir)
         self.receipts = ReceiptWriter(receipts); self.operations = operations if operations is not None else OPERATIONS
 
     def handle(self, raw: bytes, uid: int) -> dict[str, Any]:
@@ -104,6 +106,13 @@ class Helper:
             decision = authority.evaluate(name, args)
             if not decision.allowed:
                 raise Refused(f"manifest:{decision.reason}")
+            mode = (decision.rule or {}).get("confirmation", "operator") if op.confirm else "grant-only"
+            if mode == "operator":
+                # Enforced here, not in the service: a single-use root-owned approval bound to this exact request.
+                try:
+                    approvals.consume(self.approvals_dir, rid, name, args, authority.manifest_hash)
+                except approvals.ApprovalError as exc:
+                    raise Refused(str(exc))
         except Refused as exc:
             self._receipt(request, authority, uid, "deny", exc.reason, "denied")
             return {"ok": False, "error": exc.reason}
@@ -168,10 +177,12 @@ def main() -> None:
     p.add_argument("--receipts", default="/var/log/mcp-remote-sudo-helper/receipts.jsonl")  # root-owned dir: the service user must not be able to unlink it
     p.add_argument("--service-user", default="mcp-remote-sudo")
     p.add_argument("--socket", default=SOCKET_PATH)
+    p.add_argument("--approvals-dir", default=approvals.APPROVALS_DIR)
     p.add_argument("--idle-exit", type=float, default=60.0, help="exit after this many idle seconds (socket-activated)")
     a = p.parse_args()
     logging.basicConfig(level=logging.INFO)
-    helper = Helper(manifest=a.manifest, receipts=a.receipts, allowed_uid=pwd.getpwnam(a.service_user).pw_uid)
+    helper = Helper(manifest=a.manifest, receipts=a.receipts, allowed_uid=pwd.getpwnam(a.service_user).pw_uid,
+                    approvals_dir=a.approvals_dir)
     sock = listening_socket(a.socket); sock.settimeout(a.idle_exit)
     while True:
         try:

@@ -99,6 +99,18 @@ class Registry:
         return [self.operations[n] for n in names]
 
 
+def helper_adapter(name: str, *, socket_path: str | None = None) -> Callable[..., dict]:
+    """Adapter for a mutating operation: forwards to the root helper, which re-authorizes and executes it."""
+    def run(request_id: str, **arguments: Any) -> dict:
+        from .. import helper
+        response = helper.call(name, arguments, request_id, **({"path": socket_path} if socket_path else {}))
+        if not response.get("ok"):
+            raise PermissionError(f"{name}: helper refused: {response.get('error')}")
+        return response["result"]
+    run.__name__ = name.replace(".", "_")
+    return run
+
+
 def builtin_packs() -> list[TaskPack]:
     from . import core, wifi
     return [replace(p, distribution="mcp-remote-sudo") for p in (core.PACK, wifi.PACK)]

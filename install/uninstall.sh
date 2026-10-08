@@ -14,7 +14,7 @@ rm -f /etc/systemd/system/mcp-remote-sudo.service \
       /etc/systemd/system/mcp-remote-sudo-helper.socket /etc/systemd/system/mcp-remote-sudo-helper.service
 systemctl daemon-reload
 rm -rf /opt/mcp-remote-sudo
-rm -rf /var/lib/mcp-remote-sudo
+rm -rf /var/lib/mcp-remote-sudo /var/lib/mcp-remote-sudo-approvals
 
 # Remove the ICMP grant (runtime permission) installed for network.probe.
 # Only reset the live value if it is still exactly the range we installed,

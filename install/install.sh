@@ -368,7 +368,9 @@ chown root:root "$ADMIN_WRAPPER.tmp"; chmod 0755 "$ADMIN_WRAPPER.tmp"; mv -f "$A
 # accepted only from the service uid (SO_PEERCRED). It executes typed operations from its own compiled-in
 # table after re-checking the active authority; it holds no capabilities until a mutation pack needs them.
 HELPER_LOG_DIR="/var/log/mcp-remote-sudo-helper"
+APPROVALS_DIR="/var/lib/mcp-remote-sudo-approvals"   # root-only: single-use operator approvals (#42)
 install -d -o root -g root -m 0750 "$HELPER_LOG_DIR"
+install -d -o root -g root -m 0700 "$APPROVALS_DIR"
 cat >"/etc/systemd/system/$SERVICE-helper.socket" <<EOF
 [Unit]
 Description=mcp-remote-sudo privileged helper socket
@@ -392,7 +394,7 @@ Requires=$SERVICE-helper.socket
 [Service]
 Type=simple
 User=root
-ExecStart=$PREFIX/venv/bin/python -I -m mcp_remote_sudo.helper --manifest $MANIFEST --receipts $HELPER_LOG_DIR/receipts.jsonl --service-user $SERVICE_USER
+ExecStart=$PREFIX/venv/bin/python -I -m mcp_remote_sudo.helper --manifest $MANIFEST --receipts $HELPER_LOG_DIR/receipts.jsonl --service-user $SERVICE_USER --approvals-dir $APPROVALS_DIR
 NoNewPrivileges=true
 CapabilityBoundingSet=
 ProtectSystem=strict
@@ -407,7 +409,7 @@ IPAddressDeny=any
 RestrictSUIDSGID=true
 LockPersonality=true
 SystemCallArchitectures=native
-ReadWritePaths=$HELPER_LOG_DIR
+ReadWritePaths=$HELPER_LOG_DIR $APPROVALS_DIR
 EOF
 
 systemctl daemon-reload

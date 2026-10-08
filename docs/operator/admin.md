@@ -129,3 +129,22 @@ The proposal store is writable by the service, so `grant` reads the file exactly
 directory, anything other than a regular file, and files over 256 KiB. It checks the digest of exactly those bytes
 against the one you reviewed, then parses those same bytes. A proposal changed after review is refused. Only the 100
 newest proposals are kept.
+
+## Approving a change (`confirmation: operator`)
+
+Mutating operations need per-action confirmation. Each grant rule chooses the mode with `confirmation:`, and the
+default is `operator`.
+
+1. Claude calls, say, `wifi_radio_set(state="off")`. It gets back `awaiting_operator_approval` with a request ID and
+   the exact command for you.
+2. You run `sudo $A approve req-20261003T120000Z-0123abcd`. It shows the operation, the arguments and the authority.
+   It refuses if the grant has changed since the request was made, or if the active grant doesn't allow the request.
+   On confirmation it writes a root-only approval, valid for 10 minutes and for one execution.
+3. Claude retries with the same arguments and `request_id`. The root helper atomically consumes the approval, checks
+   that every bound field matches, and only then runs the operation. A second retry is refused.
+
+The other modes:
+
+- `confirmation: elicitation` asks through the MCP client instead. It refuses if the client can't ask. It's a
+  convenience, not a defence against a compromised service user.
+- `confirmation: grant-only` skips per-action confirmation, and must be written explicitly.

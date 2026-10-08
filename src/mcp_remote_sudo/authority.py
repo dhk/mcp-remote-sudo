@@ -32,6 +32,8 @@ class Authority:
         "receipts": {"required": (True, (bool,))},
     }
     CONSTRAINT_KEYS = {"enum", "minimum", "maximum"}
+    # Per-action confirmation for mutating operations (#42); "operator" is the default when unspecified.
+    CONFIRMATION_MODES = {"operator", "elicitation", "grant-only"}
 
     def __init__(self, manifest: dict[str, Any]):
         self.manifest = manifest
@@ -75,10 +77,14 @@ class Authority:
             for rule in self.manifest.get(collection, []):
                 if not isinstance(rule, dict) or not isinstance(rule.get("tool"), str):
                     raise ManifestError(f"{collection} rules require a tool name")
-                unknown_rule_fields = set(rule) - {"tool", "args"}
+                unknown_rule_fields = set(rule) - {"tool", "args", "confirmation"}
                 if unknown_rule_fields:
                     raise ManifestError(
                         f"{collection} rule for {rule['tool']} has unknown fields: {sorted(unknown_rule_fields)}"
+                    )
+                if "confirmation" in rule and (collection != "allow" or rule["confirmation"] not in self.CONFIRMATION_MODES):
+                    raise ManifestError(
+                        f"{collection} rule for {rule['tool']}: confirmation must be one of {sorted(self.CONFIRMATION_MODES)} (allow rules only)"
                     )
                 if "args" in rule and not isinstance(rule["args"], dict):
                     raise ManifestError(f"{collection} rule args must be a mapping")
