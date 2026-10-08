@@ -417,3 +417,16 @@ def test_malformed_journal_lines_are_ignored(tmp_path):
     with pack_install.locked(tmp_path / "packs") as recovered:
         assert recovered == []
     assert list(pack_install.installed_trees(tmp_path / "packs")) == ["example-pack"]
+
+
+def test_remove_is_atomic_even_if_interrupted_mid_delete(tmp_path, monkeypatch):
+    install(tmp_path, ["example-pack==1.0"], {}).commit()
+    def boom(path, ignore_errors=False): raise KeyboardInterrupt
+    monkeypatch.setattr(pack_install.shutil, "rmtree", boom)
+    with pytest.raises(KeyboardInterrupt):
+        pack_install.remove(tmp_path / "packs", "example-pack")
+    monkeypatch.undo()
+    assert pack_install.installed_trees(tmp_path / "packs") == {} and pack_install.search_paths(tmp_path / "packs") == []
+    with pack_install.locked(tmp_path / "packs"):
+        pass
+    assert not list((tmp_path / "packs").glob(".trash-*"))

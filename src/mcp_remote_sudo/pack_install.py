@@ -323,7 +323,9 @@ def remove(packs_dir: Path, name: str) -> bool:
     target = packs_dir / canonical(name)
     if not target.exists() or target.is_symlink() or not target.is_dir() or target.parent.resolve() != packs_dir.resolve():
         return False
-    shutil.rmtree(target)
+    trash = packs_dir / f".trash-rm-{target.name}-{os.getpid()}"   # atomic: never leave a half-deleted pack on sys.path
+    os.replace(target, trash)
+    shutil.rmtree(trash, ignore_errors=True)
     return True
 
 
