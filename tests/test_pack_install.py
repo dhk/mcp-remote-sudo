@@ -370,3 +370,50 @@ def test_an_interrupted_commit_is_never_mistaken_for_a_rollback_copy(tmp_path, m
         assert recovered == []
     assert [d["version"] for d in pack_install.installed(tmp_path / "packs")] == ["2.0"]
     assert not list((tmp_path / "packs").glob(".trash-*"))
+
+
+def _write_journal(previous, lines):
+    previous.mkdir(parents=True, exist_ok=True); (previous / ".journal").write_text("".join(f"{l}\n" for l in lines))
+
+
+def test_crash_before_the_first_rename_leaves_existing_packs_alone(tmp_path):
+    """Regression (review of #64): 'no backup' used to be read as 'new' and the working version deleted."""
+    install(tmp_path, ["a-pack==1.0", "b-pack==1.0"], {"a-pack": {"name": "a-pack", "top": "a_pack"},
+                                                       "b-pack": {"name": "b-pack", "top": "b_pack"}}).commit()
+    _write_journal(tmp_path / "packs" / ".previous-4242", ["replace a-pack", "replace b-pack"])
+    with pack_install.locked(tmp_path / "packs") as recovered:
+        assert recovered == []
+    assert sorted(pack_install.installed_trees(tmp_path / "packs")) == ["a-pack", "b-pack"]
+
+
+def test_half_done_rollback_replayed_by_recovery_is_idempotent(tmp_path):
+    install(tmp_path, ["a-pack==1.0", "b-pack==1.0"], {"a-pack": {"name": "a-pack", "top": "a_pack"},
+                                                       "b-pack": {"name": "b-pack", "top": "b_pack"}}).commit()
+    txn = install(tmp_path, ["a-pack==2.0", "b-pack==2.0"], {"a-pack": {"name": "a-pack", "top": "a_pack", "version": "2.0"},
+                                                             "b-pack": {"name": "b-pack", "top": "b_pack", "version": "2.0"}})
+    # simulate a rollback that restored b-pack and then died
+    packs_dir = tmp_path / "packs"; import shutil, os
+    shutil.rmtree(packs_dir / "b-pack"); os.replace(txn._old / "b-pack", packs_dir / "b-pack")
+    for _ in range(2):   # recovery twice: must converge, never delete the restored b-pack
+        with pack_install.locked(packs_dir):
+            pass
+    assert sorted((d["distribution"], d["version"]) for d in pack_install.installed(packs_dir)) == [("a-pack", "1.0"), ("b-pack", "1.0")]
+
+
+def test_interrupt_right_after_a_new_pack_is_moved_in_is_rolled_back(tmp_path, monkeypatch):
+    real_dist = pack_install._dist_in
+    def interrupted(tree):
+        if tree.name == "new-pack" and ".staging-" not in str(tree): raise KeyboardInterrupt
+        return real_dist(tree)
+    monkeypatch.setattr(pack_install, "_dist_in", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        install(tmp_path, ["new-pack==1.0"], {"new-pack": {"name": "new-pack", "top": "new_pack"}})
+    assert pack_install.installed_trees(tmp_path / "packs") == {}
+
+
+def test_malformed_journal_lines_are_ignored(tmp_path):
+    install(tmp_path, ["example-pack==1.0"], {}).commit()
+    _write_journal(tmp_path / "packs" / ".previous-7", ["new ../../etc", "new .hidden", "delete example-pack", "new Example-Pack"])
+    with pack_install.locked(tmp_path / "packs") as recovered:
+        assert recovered == []
+    assert list(pack_install.installed_trees(tmp_path / "packs")) == ["example-pack"]

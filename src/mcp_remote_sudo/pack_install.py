@@ -24,7 +24,7 @@ import re
 import shutil
 import sys
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
@@ -136,29 +136,41 @@ def locked(packs_dir: Path):
         yield recover(packs_dir)
 
 
-def recover(packs_dir: Path) -> list[str]:
-    """Undo an interrupted run (caller holds the lock).
+JOURNAL_LINE = re.compile(r"^(new|replace) ([a-z0-9][a-z0-9-]*)$")
 
-    ``.previous-<pid>/`` holds the versions swapped out and a ``.journal`` of every name the run swapped in (written
-    and fsynced before the first rename). Any ``.previous-*`` still present means the run never confirmed its new
-    packs: journaled names are restored from their backup, or removed if they were new. ``.trash-*`` (a committed or
-    rolled-back ``.previous``, renamed atomically before deletion) and ``.staging-*`` are scratch and just deleted."""
+
+def _read_journal(previous: Path) -> list[tuple[str, str]]:
+    journal = previous / ".journal"
+    if not journal.is_file(): return []
+    return [m.groups() for m in (JOURNAL_LINE.fullmatch(l.strip()) for l in journal.read_text().splitlines()) if m]
+
+
+def undo(packs_dir: Path, previous: Path) -> list[str]:
+    """Idempotently return every journaled name to its pre-run state. Safe to repeat after a partial run:
+    - replace + backup present  -> restore the backup over whatever is there;
+    - replace + no backup       -> leave it (never moved aside, or already restored);
+    - new                       -> remove the target if present."""
+    undone = []
+    for kind, name in _read_journal(previous):
+        target, backup = packs_dir / name, previous / name
+        if target.is_symlink() or backup.is_symlink(): continue
+        if kind == "replace" and backup.is_dir():
+            if target.exists(): shutil.rmtree(target)
+            os.replace(backup, target); undone.append(name)
+        elif kind == "new" and target.exists():
+            shutil.rmtree(target); undone.append(name)
+    return undone
+
+
+def recover(packs_dir: Path) -> list[str]:
+    """Undo an interrupted run (caller holds the lock). A surviving ``.previous-<pid>/`` means the run never
+    confirmed its new packs; its fsynced ``.journal`` says what to undo. ``.trash-*`` (a retired ``.previous``) and
+    ``.staging-*`` are scratch."""
     recovered = []
     for previous in sorted(packs_dir.glob(".previous-*")):
-        if not previous.is_dir() or previous.is_symlink(): continue
-        journal = previous / ".journal"
-        names = [n for n in (journal.read_text().split() if journal.is_file() else []) if n == canonical(n)]
-        names += [t.name for t in previous.iterdir() if t.is_dir() and not t.name.startswith(".") and t.name not in names]
-        for name in names:
-            target, backup = packs_dir / name, previous / name
-            if target.is_symlink() or "/" in name or name.startswith("."): continue
-            if backup.is_dir() and not backup.is_symlink():
-                if target.exists(): shutil.rmtree(target)
-                os.replace(backup, target)
-            elif target.exists():
-                shutil.rmtree(target)          # new in the interrupted run: never confirmed
-            recovered.append(name)
-        shutil.rmtree(previous, ignore_errors=True)
+        if previous.is_dir() and not previous.is_symlink():
+            recovered += undo(packs_dir, previous)
+            _discard(previous)
     for scratch in list(packs_dir.glob(".staging-*")) + list(packs_dir.glob(".trash-*")):
         if scratch.is_dir() and not scratch.is_symlink(): shutil.rmtree(scratch, ignore_errors=True)
     return recovered
@@ -241,22 +253,16 @@ def check_staged(staged: dict[str, Path], packs_dir: Path) -> None:
 
 @dataclass
 class Transaction:
-    """Staged and swapped in; the previous versions are kept until commit() (or restored by rollback())."""
+    """Swapped in; the previous versions and the journal are kept until commit() (or undone by rollback())."""
     packs_dir: Path
     installed: list[str]
     _old: Path
-    _swapped: list[str] = field(default_factory=list)   # names whose directory changed (old moved aside and/or new moved in)
-    _new: set[str] = field(default_factory=set)         # names whose new tree is in place
 
     def commit(self) -> None:
         _discard(self._old)
 
     def rollback(self) -> None:
-        for name in reversed(self._swapped):
-            target = self.packs_dir / name
-            previous = self._old / name
-            if target.exists() and (previous.exists() or name in self._new): shutil.rmtree(target)
-            if previous.exists(): os.replace(previous, target)
+        undo(self.packs_dir, self._old)
         _discard(self._old)
 
 
@@ -280,18 +286,18 @@ def install(lockfile: Path, packs_dir: Path, run: Callable[[Sequence[str]], obje
             staged[pin.name] = tree
         check_staged(staged, packs_dir)
         old.mkdir(mode=0o700)
-        with open(old / ".journal", "w") as fh:   # every name this run swaps in, durable before the first rename
-            fh.write("\n".join(staged) + "\n"); fh.flush(); os.fsync(fh.fileno())
+        for name in staged:
+            if (packs_dir / name).is_symlink():
+                raise PackInstallError(f"{packs_dir / name} is a symlink; refusing")
+        kinds = {name: "replace" if (packs_dir / name).exists() else "new" for name in staged}
+        with open(old / ".journal", "w") as fh:   # durable before the first rename: recovery's source of truth
+            fh.write("".join(f"{kinds[n]} {n}\n" for n in staged)); fh.flush(); os.fsync(fh.fileno())
         txn = Transaction(packs_dir, [], old)
         try:
             for name, tree in staged.items():
                 target = packs_dir / name
-                if target.is_symlink():
-                    raise PackInstallError(f"{target} is a symlink; refusing")
-                txn._swapped.append(name)                 # recorded first: rollback must restore a moved-aside version
-                if target.exists(): os.replace(target, old / name)
+                if kinds[name] == "replace": os.replace(target, old / name)
                 os.replace(tree, target)
-                txn._new.add(name)
                 dist = _dist_in(target)
                 txn.installed.append(f"{name}=={dist.version if dist else '?'}")
         except BaseException:   # incl. Ctrl-C between the two renames
