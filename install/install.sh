@@ -70,7 +70,9 @@ backup_manifest(){
   [[ -f "$MANIFEST" ]] || return 0
   local backup
   backup="$MANIFEST.bak-$(date -u +%Y%m%dT%H%M%SZ)"
-  cp -p "$MANIFEST" "$backup"
+  # Explicit failure handling: errexit is disabled inside command substitution.
+  cp -p "$MANIFEST" "$backup" || return 1
+  cmp -s "$MANIFEST" "$backup" || return 1
   printf '%s\n' "$backup"
 }
 
@@ -106,6 +108,19 @@ write_ping_dropin(){
 net.ipv4.ping_group_range = $gid $gid
 EOF
   chmod 0644 "$SYSCTL_DROPIN"
+}
+
+# Remove a previously installed drop-in (opt-out on reinstall). Resets the live
+# value only while it is still exactly the range we installed, then re-applies
+# any administrator-configured value from sysctl.d.
+remove_ping_dropin(){
+  local gid="$1"
+  [[ -f "$SYSCTL_DROPIN" ]] || return 0
+  rm -f "$SYSCTL_DROPIN"
+  if [[ "$(ping_range_current)" == "$gid $gid" ]]; then
+    sysctl -w net.ipv4.ping_group_range="1 0" >/dev/null || return 1
+    sysctl --system >/dev/null 2>&1 || true
+  fi
 }
 
 resolve_port
@@ -223,7 +238,7 @@ print((datetime.now(timezone.utc)+timedelta(hours=int(sys.argv[1]))).isoformat()
 PY
 )"
 
-MANIFEST_BACKUP="$(backup_manifest)"
+MANIFEST_BACKUP="$(backup_manifest)" || fail "manifest_backup_failed"
 cat >"$MANIFEST" <<EOF
 apiVersion: mcp-remote-sudo/v1
 kind: TaskAuthority
@@ -291,6 +306,8 @@ ICMP_STATUS="$(icmp_decision "$SERVICE_GID")"
 if [[ "$ICMP_STATUS" == enabled ]]; then
   write_ping_dropin "$SERVICE_GID"
   sysctl -p "$SYSCTL_DROPIN" >/dev/null || fail "icmp_sysctl_failed"
+elif [[ "$ICMP_STATUS" == disabled ]]; then
+  remove_ping_dropin "$SERVICE_GID" || fail "icmp_sysctl_failed"
 fi
 
 systemctl daemon-reload

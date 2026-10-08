@@ -128,6 +128,21 @@ expect_eq "$(FAKE_PING_RANGE='0	2147483647' lib icmp_decision 987)" already_perm
 expect_eq "$(FAKE_PING_RANGE='100	200' lib icmp_decision 987)" skipped_conflicting_range
 expect_eq "$(FAKE_PING_RANGE='1	0' MCP_REMOTE_SUDO_ICMP=0 lib icmp_decision 987)" disabled
 
+# A backup that cannot be written must fail (never silently proceed).
+# (Skipped as root, where directory permissions do not block writes.)
+if [[ "${EUID}" -ne 0 ]]; then
+  chmod 0555 "$WORK/etc"
+  if lib backup_manifest >/dev/null 2>&1; then chmod 0755 "$WORK/etc"; echo "FAIL: unwritable backup reported success"; exit 1; fi
+  chmod 0755 "$WORK/etc"
+fi
+grep -q 'MANIFEST_BACKUP="$(backup_manifest)" || fail "manifest_backup_failed"' "$INSTALL"
+
+# Opt-out on reinstall removes a previously installed drop-in.
+echo "net.ipv4.ping_group_range = 987 987" >"$WORK/etc/60-ping.conf"
+FAKE_PING_RANGE='987	987' lib remove_ping_dropin 987
+[[ ! -e "$WORK/etc/60-ping.conf" ]] || { echo "FAIL: opt-out left the drop-in"; exit 1; }
+grep -q 'remove_ping_dropin "$SERVICE_GID"' "$INSTALL"
+
 # The drop-in grants exactly the service group.
 lib write_ping_dropin 987
 grep -qx 'net.ipv4.ping_group_range = 987 987' "$WORK/etc/60-ping.conf"
