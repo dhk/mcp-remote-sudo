@@ -112,8 +112,10 @@ class AuthorityReloader:
         return self.write_status(True,attempted_hash=new.manifest_hash,attempted_file_sha256=file_sha)
 
 def main()->None:
-    p=argparse.ArgumentParser(); p.add_argument("--manifest",required=True); p.add_argument("--agent",required=True); p.add_argument("--session",default=None,help="legacy fixed session; omit to take the session from the active manifest (minted per grant)"); p.add_argument("--host",default=socket.gethostname()); p.add_argument("--receipts",default=os.environ.get("MCP_REMOTE_SUDO_RECEIPTS","./receipts.jsonl")); p.add_argument("--port",type=int,default=8765); p.add_argument("--state-dir",default=os.environ.get("MCP_REMOTE_SUDO_STATE_DIR","/var/lib/mcp-remote-sudo")); p.add_argument("--packs-dir",default=None,help="external Task Packs installed with pip --target; appended (lowest priority) to sys.path"); a=p.parse_args()
-    if a.packs_dir and os.path.isdir(a.packs_dir): sys.path.append(a.packs_dir)  # append, never prepend: packs must not shadow core modules
+    p=argparse.ArgumentParser(); p.add_argument("--manifest",required=True); p.add_argument("--agent",required=True); p.add_argument("--session",default=None,help="legacy fixed session; omit to take the session from the active manifest (minted per grant)"); p.add_argument("--host",default=socket.gethostname()); p.add_argument("--receipts",default=os.environ.get("MCP_REMOTE_SUDO_RECEIPTS","./receipts.jsonl")); p.add_argument("--port",type=int,default=8765); p.add_argument("--state-dir",default=os.environ.get("MCP_REMOTE_SUDO_STATE_DIR","/var/lib/mcp-remote-sudo")); p.add_argument("--packs-dir",default=None,help="external Task Packs (one pip --target directory per distribution); appended, lowest priority, to sys.path"); a=p.parse_args()
+    if a.packs_dir and os.path.isdir(a.packs_dir):
+        from . import pack_install
+        sys.path.extend(pack_install.search_paths(a.packs_dir))  # one dir per distribution; appended, never prepended
     authority=Authority.load(a.manifest); runtime=Runtime(authority,ReceiptWriter(a.receipts),agent=a.agent,session=a.session,host=a.host)
     if not 1 <= a.port <= 65535: p.error("--port must be between 1 and 65535")
     registry=packs.default_registry(); mcp=build_server(runtime,port=a.port,registry=registry)

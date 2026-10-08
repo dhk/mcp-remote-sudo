@@ -70,17 +70,24 @@ sudo $A pack remove example-pack                     # refused while the active 
 sudo $A pack list                                    # built-in + external (metadata only) + what the service loaded
 ```
 
-The lockfile pins every distribution, dependencies included, as `name==version --hash=sha256:<digest>`. Installation:
+The lockfile pins every distribution, dependencies included, as `name==version --hash=sha256:<digest>`. Each
+distribution gets its own directory, `/opt/mcp-remote-sudo/packs/<name>/`. The service appends each one to `sys.path`
+at lowest priority (`--packs-dir`, set on the unit by the installer). Installation:
 
-1. Runs `pip -I install --only-binary :all: --require-hashes --no-deps --no-compile --target <staging>`. Only wheels
-   are accepted, so no build hooks run as root, and nothing gets resolved beyond what the lockfile pins.
+1. Runs `pip -I install --only-binary :all: --require-hashes --no-deps --no-compile --target <staging>/<name>` for each
+   pin. Only wheels are accepted, so no build hooks run as root, and nothing gets resolved beyond what the lockfile
+   pins.
 2. Refuses any distribution that would replace mcp-remote-sudo or one of its runtime dependencies.
-3. Refuses any top-level import name that shadows the standard library, already resolves in the core environment, or
-   belongs to another installed pack.
-4. Moves the staged files into `/opt/mcp-remote-sudo/packs`. That directory is not a site directory, so wheel `.pth`
-   files never execute. The service appends it to `sys.path` at lowest priority (`--packs-dir`, wired up by #56).
-5. Restarts `mcp-remote-sudo.service`, rather than reloading it, so the service starts from a clean import state. It
-   then confirms the service is healthy.
+3. Checks the files **actually staged**, not what the wheel's metadata claims. Every top-level entry must be a plain
+   module name, and must not shadow the standard library, resolve in the core environment, or belong to another
+   installed pack.
+4. Swaps the new directories in by rename, keeping the previous versions.
+5. Restarts the service and confirms it loaded every newly installed pack. If anything fails, the previous versions are
+   restored and the service is restarted again. A restart, rather than a reload, gives a clean import state.
+
+`pack remove` deletes exactly `/opt/mcp-remote-sudo/packs/<name>`; it never uses a path taken from wheel metadata. It's
+refused while the active authority uses the pack's operations, or while another installed pack lists it in
+`Requires-Dist`.
 
 The admin never imports pack code. Installing a pack grants nothing: its operations become available, and a later
 `grant` decides what is exposed.

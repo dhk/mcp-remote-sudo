@@ -219,6 +219,8 @@ if getent group systemd-journal >/dev/null; then
 fi
 
 install -d -o root -g root -m 0755 "$PREFIX" "$CONFIG_DIR"
+# External Task Packs: one root-owned pip --target tree per distribution (installed only by mcp-remote-sudo-admin).
+install -d -o root -g root -m 0755 "$PREFIX/packs"
 install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$STATE_DIR" "$LOG_DIR"
 
 rm -rf "$PREFIX/src.new"
@@ -282,7 +284,7 @@ User=$SERVICE_USER
 Group=$SERVICE_USER
 SupplementaryGroups=systemd-journal
 # No --session: the session comes from the active manifest and each admin grant mints a new one (#39).
-ExecStart=$PREFIX/venv/bin/mcp-remote-sudo --manifest $MANIFEST --agent mcp-remote-sudo --host $HOST --receipts $RECEIPTS --port $PORT
+ExecStart=$PREFIX/venv/bin/mcp-remote-sudo --manifest $MANIFEST --agent mcp-remote-sudo --host $HOST --receipts $RECEIPTS --port $PORT --packs-dir $PREFIX/packs
 Restart=on-failure
 # SIGHUP means "reload"; if one lands before Python installs its handler, restart rather than stay down.
 RestartForceExitStatus=SIGHUP

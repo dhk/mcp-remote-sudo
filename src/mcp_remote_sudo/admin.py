@@ -197,19 +197,36 @@ class Admin:
                     for op in info.get("operations", []):
                         self.say(f"  {op:<22} {'exposed' if op in allowed else 'available'}")
 
-    def pack_install(self, lockfile: str, *, yes: bool = False, timeout: float = 20.0) -> list[str]:
+    def pack_install(self, lockfile: str, *, yes: bool = False, timeout: float = 45.0) -> list[str]:
+        """Stage, check and swap in; keep the previous versions until the restarted service shows the new packs."""
         if not yes and input(f"install packs pinned in {lockfile} into {self.packs_dir} and restart {self.service}? [y/N] ").strip().lower() not in ("y", "yes"):
             raise AdminError("aborted by operator")
         try:
-            done = pack_install.install(Path(lockfile), self.packs_dir, run)
+            txn = pack_install.install(Path(lockfile), self.packs_dir, run)
         except (pack_install.PackInstallError, OSError) as exc:
             raise AdminError(str(exc)) from exc
-        self.say(f"installed: {', '.join(done)}")
-        self._restart_and_confirm(timeout)
+        self.say(f"staged and installed: {', '.join(txn.installed)}")
+        expected = {d["distribution"] for d in pack_install.installed(self.packs_dir)
+                    if d["entry_points"] and f"{d['distribution']}==" in " ".join(txn.installed)}
+        try:
+            st = self._restart_and_confirm(timeout)
+            loaded = {pack_install.canonical(i.get("distribution") or "") for i in (st.get("packs") or {}).values()}
+            missing = sorted(expected - loaded)
+            if missing:
+                raise AdminError(f"the service restarted but did not load {missing} (is --packs-dir set on the unit?)")
+        except AdminError as exc:
+            txn.rollback()
+            try:
+                self._restart_and_confirm(timeout)
+                restored = "previous packs restored and service restarted"
+            except AdminError as again:
+                restored = f"previous packs restored, but the restart did not confirm: {again}"
+            raise AdminError(f"pack install failed ({exc}); {restored}") from exc
+        txn.commit()
         self.pack_list()
-        return done
+        return txn.installed
 
-    def pack_remove(self, dist: str, *, yes: bool = False, timeout: float = 20.0) -> None:
+    def pack_remove(self, dist: str, *, yes: bool = False, timeout: float = 45.0) -> None:
         status = self.read_status()
         if status is None or "packs" not in status:
             raise AdminError("cannot confirm which operations the pack provides (service status unavailable); refusing")
@@ -220,14 +237,17 @@ class Admin:
         referenced = sorted(provided & allowed)
         if referenced:
             raise AdminError(f"the active authority still allows {referenced} from {dist}; revoke or re-grant first")
+        needed_by = pack_install.dependents(self.packs_dir, dist)
+        if needed_by:
+            raise AdminError(f"{dist} is required by installed packs {needed_by}; remove those first")
         if not yes and input(f"remove {dist} from {self.packs_dir} and restart {self.service}? [y/N] ").strip().lower() not in ("y", "yes"):
             raise AdminError("aborted by operator")
-        if not pack_install.remove_distribution_files(self.packs_dir, dist):
+        if not pack_install.remove(self.packs_dir, dist):
             raise AdminError(f"{dist} is not installed in {self.packs_dir}")
         self.say(f"removed: {pack_install.canonical(dist)}")
         self._restart_and_confirm(timeout)
 
-    def _restart_and_confirm(self, timeout: float) -> None:
+    def _restart_and_confirm(self, timeout: float) -> dict:
         # A restart (not a reload) gives the service a clean import state after packs change on disk.
         before = (self.read_status() or {}).get("at")
         r = run(["systemctl", "restart", self.service])
@@ -238,7 +258,7 @@ class Admin:
             st = self.read_status()
             if st and st.get("at") != before:
                 if st.get("ok"):
-                    self.say(f"{self.service} restarted; authority {st.get('manifest_hash')} loaded"); return
+                    self.say(f"{self.service} restarted; authority {st.get('manifest_hash')} loaded"); return st
                 raise AdminError(f"{self.service} restarted but reports: {st.get('error')}")
             time.sleep(0.2)
         raise AdminError(f"{self.service} did not report healthy within {timeout:g}s (see journalctl -u {self.service})")
@@ -367,9 +387,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     pk = sub.add_parser("pack", help="Task Pack operations"); pk_sub = pk.add_subparsers(dest="pack_command", required=True)
     pk_sub.add_parser("list", help="installed packs and which operations the active authority exposes")
     pi = pk_sub.add_parser("install", help="install wheel-only, hash-pinned packs from a lockfile, then restart")
-    pi.add_argument("--requirements", required=True); pi.add_argument("--yes", action="store_true"); pi.add_argument("--timeout", type=float, default=20.0)
+    pi.add_argument("--requirements", required=True); pi.add_argument("--yes", action="store_true"); pi.add_argument("--timeout", type=float, default=45.0)
     pr = pk_sub.add_parser("remove", help="remove an external pack distribution (refused while referenced), then restart")
-    pr.add_argument("distribution"); pr.add_argument("--yes", action="store_true"); pr.add_argument("--timeout", type=float, default=20.0)
+    pr.add_argument("distribution"); pr.add_argument("--yes", action="store_true"); pr.add_argument("--timeout", type=float, default=45.0)
     a = p.parse_args(argv)
     admin = Admin(a.manifest, a.state_dir, a.receipts, a.service, packs_dir=a.packs_dir)
     admin.session_mode_override = a.session_mode

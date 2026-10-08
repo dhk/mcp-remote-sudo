@@ -1,11 +1,18 @@
 """Installing external Task Packs safely (run by the operator as root via mcp-remote-sudo-admin).
 
-Threat model: the operator runs this as root, so nothing from a pack may execute here.
-- Wheels only, every distribution pinned and hashed, no dependency resolution (no build hooks, no surprises).
-- Installed with ``pip --target`` into a non-site directory (wheel ``.pth`` files are never executed).
-- Never replaces mcp-remote-sudo or its runtime dependencies, and never shadows the standard library, the core
-  virtualenv, or another pack (the service appends the packs directory at lowest priority as a second layer).
-- Pack code is never imported here; only distribution metadata is read.
+Threat model: the operator runs this as root, so nothing from a pack may execute here, and nothing a wheel claims
+about itself may decide which paths get written or deleted.
+
+Layout: one directory per distribution, ``<packs_dir>/<canonical-name>/`` (a ``pip --target`` tree). The service
+appends each to ``sys.path`` at lowest priority. Consequences:
+- removal deletes exactly ``<packs_dir>/<name>`` — never a path derived from wheel metadata;
+- collision checks run on the files actually staged, not on what ``top_level.txt`` claims;
+- no shared directories between distributions (``bin/`` etc.), so an install can't clobber another pack;
+- installs are transactional: stage and check everything, then swap directories by rename, keeping the previous
+  version until the caller confirms the service loaded the new one (``Transaction.commit`` / ``rollback``).
+
+Other rules: wheels only, every distribution pinned and hashed, no dependency resolution (no build hooks); never
+replace mcp-remote-sudo or its runtime dependencies; never import pack code here.
 """
 from __future__ import annotations
 
@@ -14,13 +21,15 @@ import os
 import re
 import shutil
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
 PIN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([A-Za-z0-9][A-Za-z0-9.+!_-]*)$")
 HASH = re.compile(r"^--hash=sha256:[0-9a-f]{64}$")
+MODULE_ENTRY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.py)?$")
+IGNORED_ENTRIES = {"bin", "__pycache__"}   # per-distribution tree: scripts can't collide with another pack
 
 
 class PackInstallError(RuntimeError):
@@ -36,6 +45,9 @@ class Pinned:
     name: str
     version: str
     hashes: tuple[str, ...]
+
+    def requirement_line(self) -> str:
+        return f"{self.name}=={self.version} " + " ".join(self.hashes) + "\n"
 
 
 def parse_lockfile(text: str) -> list[Pinned]:
@@ -67,6 +79,14 @@ def parse_lockfile(text: str) -> list[Pinned]:
     return pins
 
 
+def _requires(dist: metadata.Distribution) -> list[str]:
+    out = []
+    for req in dist.requires or []:
+        if "extra ==" in req: continue
+        out.append(canonical(re.split(r"[\s;<>=!~\[(]", req, 1)[0]))
+    return out
+
+
 def protected_distributions(root: str = "mcp-remote-sudo") -> set[str]:
     """mcp-remote-sudo and its transitive runtime dependencies, as installed in the core environment."""
     seen: set[str] = set(); todo = [root]
@@ -74,113 +94,174 @@ def protected_distributions(root: str = "mcp-remote-sudo") -> set[str]:
         name = canonical(todo.pop())
         if name in seen: continue
         seen.add(name)
-        try: requires = metadata.requires(name) or []
+        try: todo.extend(_requires(metadata.distribution(name)))
         except metadata.PackageNotFoundError: continue
-        for req in requires:
-            if "extra ==" in req: continue
-            todo.append(re.split(r"[\s;<>=!~\[(]", req, 1)[0])
     return seen
 
 
-def top_level_names(dist: metadata.Distribution) -> set[str]:
-    text = dist.read_text("top_level.txt")
-    if text:
-        return {n.strip() for n in text.split() if n.strip()}
+def actual_entries(tree: Path) -> set[str]:
+    """Top-level importable names actually present in a --target tree (not what metadata claims)."""
     names = set()
-    for f in dist.files or []:
-        first = f.parts[0]
-        if first.endswith((".dist-info", ".data")) or first == "..": continue
-        names.add(first[:-3] if first.endswith(".py") else first)
+    for e in tree.iterdir():
+        if e.name.endswith((".dist-info", ".data")) or e.name in IGNORED_ENTRIES: continue
+        names.add(e.name)
     return names
 
 
-def environment_top_levels(paths: Sequence[str] | None = None, *, exclude: Iterable[str] = ()) -> dict[str, str]:
-    """top-level import name -> distribution, for the distributions installed at `paths` (default: sys.path)."""
-    skip = {canonical(e) for e in exclude}; owners: dict[str, str] = {}
-    for dist in metadata.distributions(path=list(paths) if paths is not None else None):
-        name = canonical(dist.metadata["Name"] or "")
-        if name in skip: continue
-        for top in top_level_names(dist): owners.setdefault(top, name)
-    return owners
+def _module_name(entry: str) -> str:
+    return entry[:-3] if entry.endswith(".py") else entry
 
 
-def _resolvable_in_core(top: str, packs_dir: Path) -> bool:
-    """Whether `top` already resolves on the core sys.path (catches editable installs and modules without metadata).
-    find_spec on a top-level name locates it without executing its code; the packs dir is never on the admin's path."""
-    if not top.isidentifier(): return False
-    try: spec = importlib.util.find_spec(top)
-    except (ImportError, ValueError): return True   # fail closed on anything odd
+def _core_top_levels(exclude: Path) -> set[str]:
+    names = set()
+    for dist in metadata.distributions(path=[p for p in sys.path if p and not _under(Path(p), exclude)]):
+        text = dist.read_text("top_level.txt")
+        if text: names.update(n.strip() for n in text.split() if n.strip())
+    return names
+
+
+def _under(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve()); return True
+    except (ValueError, OSError):
+        return False
+
+
+def _resolvable_in_core(name: str, packs_dir: Path) -> bool:
+    """Whether `name` already resolves on the core sys.path (catches editable installs and metadata-less modules).
+    find_spec on a top-level name locates it without executing it; the packs dir is never on the admin's path."""
+    try: spec = importlib.util.find_spec(name)
+    except (ImportError, ValueError): return True   # fail closed
     if spec is None: return False
-    origin = Path(spec.origin).resolve() if spec.origin and spec.origin not in ("built-in", "frozen") else None
-    return not (origin and packs_dir.resolve() in origin.parents)
+    origin = spec.origin if spec.origin not in (None, "built-in", "frozen") else None
+    return not (origin and _under(Path(origin), packs_dir))
 
 
-def check_staged(staging: Path, pins: list[Pinned], packs_dir: Path) -> list[metadata.Distribution]:
-    staged = list(metadata.distributions(path=[str(staging)]))
-    got = {canonical(d.metadata["Name"]): d for d in staged}
-    if set(got) != {p.name for p in pins}:
-        raise PackInstallError(f"pip installed {sorted(got)}, lockfile pins {sorted(p.name for p in pins)}")
+def installed_trees(packs_dir: Path) -> dict[str, Path]:
+    if not packs_dir.exists(): return {}
+    return {d.name: d for d in sorted(packs_dir.iterdir()) if d.is_dir() and not d.is_symlink() and not d.name.startswith(".")}
+
+
+def _dist_in(tree: Path) -> metadata.Distribution | None:
+    infos = [i for i in tree.glob("*.dist-info") if i.is_dir()]
+    return metadata.PathDistribution(infos[0]) if len(infos) == 1 else None
+
+
+def check_staged(staged: dict[str, Path], packs_dir: Path) -> None:
     protected = protected_distributions() | {"pip", "setuptools", "wheel"}
-    clash = sorted(set(got) & protected)
+    clash = sorted(set(staged) & protected)
     if clash:
         raise PackInstallError(f"refusing to replace mcp-remote-sudo or its dependencies: {clash}")
-    core = environment_top_levels([p for p in sys.path if p and Path(p).resolve() != packs_dir.resolve()])
-    others = environment_top_levels([str(packs_dir)], exclude=got) if packs_dir.exists() else {}
-    for name, dist in got.items():
-        for top in top_level_names(dist):
-            if top in sys.stdlib_module_names:
-                raise PackInstallError(f"{name}: top-level name {top!r} shadows the standard library")
-            if top in core:
-                raise PackInstallError(f"{name}: top-level name {top!r} collides with {core[top]} in the core environment")
-            if _resolvable_in_core(top, packs_dir):
-                raise PackInstallError(f"{name}: top-level name {top!r} is already importable in the core environment")
-            if top in others:
-                raise PackInstallError(f"{name}: top-level name {top!r} collides with installed pack {others[top]}")
-    return staged
+    core = _core_top_levels(packs_dir)
+    others = {e: name for name, tree in installed_trees(packs_dir).items() if name not in staged
+              for e in actual_entries(tree)}
+    seen: dict[str, str] = {}
+    for name, tree in staged.items():
+        dist = _dist_in(tree)
+        if dist is None or canonical(dist.metadata["Name"] or "") != name:
+            raise PackInstallError(f"{name}: staging does not contain exactly that one distribution")
+        for entry in actual_entries(tree):
+            if entry.startswith(".") or not MODULE_ENTRY.fullmatch(entry) or (tree / entry).is_symlink():
+                raise PackInstallError(f"{name}: unexpected top-level entry {entry!r}")
+            mod = _module_name(entry)
+            if mod in sys.stdlib_module_names:
+                raise PackInstallError(f"{name}: top-level name {mod!r} shadows the standard library")
+            if mod in core or _resolvable_in_core(mod, packs_dir):
+                raise PackInstallError(f"{name}: top-level name {mod!r} collides with the core environment")
+            if entry in others or mod in {_module_name(o) for o in others}:
+                raise PackInstallError(f"{name}: top-level name {mod!r} collides with installed pack {others.get(entry, '?')}")
+            if mod in seen:
+                raise PackInstallError(f"{name}: top-level name {mod!r} also provided by {seen[mod]}")
+            seen[mod] = name
 
 
-def remove_distribution_files(packs_dir: Path, dist_name: str) -> bool:
-    for info in sorted(packs_dir.glob("*.dist-info")):
-        dist = metadata.PathDistribution(info)
-        if canonical(dist.metadata["Name"] or "") != canonical(dist_name): continue
-        for top in top_level_names(dist):
-            target = packs_dir / top
-            if target.is_dir() and not target.is_symlink(): shutil.rmtree(target)
-            for candidate in (target, packs_dir / f"{top}.py"):
-                if candidate.is_file() or candidate.is_symlink(): candidate.unlink()
-        shutil.rmtree(info)
-        return True
-    return False
+@dataclass
+class Transaction:
+    """Staged and swapped in; the previous versions are kept until commit() (or restored by rollback())."""
+    packs_dir: Path
+    installed: list[str]
+    _old: Path
+    _swapped: list[str] = field(default_factory=list)
+
+    def commit(self) -> None:
+        shutil.rmtree(self._old, ignore_errors=True)
+
+    def rollback(self) -> None:
+        for name in reversed(self._swapped):
+            target = self.packs_dir / name
+            if target.exists(): shutil.rmtree(target)
+            previous = self._old / name
+            if previous.exists(): os.replace(previous, target)
+        shutil.rmtree(self._old, ignore_errors=True)
 
 
-def install(lockfile: Path, packs_dir: Path, run: Callable[[Sequence[str]], object], python: str = sys.executable) -> list[str]:
+def install(lockfile: Path, packs_dir: Path, run: Callable[[Sequence[str]], object], python: str = sys.executable) -> Transaction:
     pins = parse_lockfile(lockfile.read_text())
     packs_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
-    staging = packs_dir.with_name(f".{packs_dir.name}.staging-{os.getpid()}")
-    shutil.rmtree(staging, ignore_errors=True)
+    work = packs_dir / f".staging-{os.getpid()}"
+    shutil.rmtree(work, ignore_errors=True); work.mkdir(mode=0o700)
+    old = packs_dir / f".previous-{os.getpid()}"
+    shutil.rmtree(old, ignore_errors=True)
     try:
-        result = run([python, "-I", "-m", "pip", "install", "--no-input", "--disable-pip-version-check",
-                      "--only-binary", ":all:", "--require-hashes", "--no-deps", "--no-compile",
-                      "--target", str(staging), "-r", str(lockfile)])
-        if getattr(result, "returncode", 1) != 0:
-            raise PackInstallError(f"pip failed: {getattr(result, 'stderr', '').strip()[-500:]}")
-        staged = check_staged(staging, pins, packs_dir)
-        installed = []
-        for dist in staged:
-            name = canonical(dist.metadata["Name"])
-            remove_distribution_files(packs_dir, name)   # upgrade in place
-            installed.append(f"{name}=={dist.version}")
-        for entry in staging.iterdir():
-            os.replace(entry, packs_dir / entry.name)
-        return installed
+        staged: dict[str, Path] = {}
+        for pin in pins:
+            req = work / f"{pin.name}.req"; req.write_text(pin.requirement_line())
+            tree = work / pin.name
+            result = run([python, "-I", "-m", "pip", "install", "--no-input", "--disable-pip-version-check",
+                          "--only-binary", ":all:", "--require-hashes", "--no-deps", "--no-compile",
+                          "--target", str(tree), "-r", str(req)])
+            if getattr(result, "returncode", 1) != 0:
+                raise PackInstallError(f"pip failed for {pin.name}: {getattr(result, 'stderr', '').strip()[-500:]}")
+            staged[pin.name] = tree
+        check_staged(staged, packs_dir)
+        old.mkdir(mode=0o700)
+        txn = Transaction(packs_dir, [], old)
+        try:
+            for name, tree in staged.items():
+                target = packs_dir / name
+                if target.is_symlink():
+                    raise PackInstallError(f"{target} is a symlink; refusing")
+                if target.exists(): os.replace(target, old / name)
+                os.replace(tree, target)
+                txn._swapped.append(name)
+                dist = _dist_in(target)
+                txn.installed.append(f"{name}=={dist.version if dist else '?'}")
+        except Exception:
+            txn.rollback(); raise
+        return txn
     finally:
-        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def dependents(packs_dir: Path, name: str) -> list[str]:
+    """Installed packs whose metadata requires `name` (read without importing)."""
+    out = []
+    for other, tree in installed_trees(packs_dir).items():
+        if other == canonical(name): continue
+        dist = _dist_in(tree)
+        if dist is not None and canonical(name) in _requires(dist):
+            out.append(other)
+    return out
+
+
+def remove(packs_dir: Path, name: str) -> bool:
+    """Delete exactly <packs_dir>/<canonical name>; never a path derived from wheel metadata."""
+    target = packs_dir / canonical(name)
+    if not target.exists() or target.is_symlink() or not target.is_dir() or target.parent.resolve() != packs_dir.resolve():
+        return False
+    shutil.rmtree(target)
+    return True
 
 
 def installed(packs_dir: Path) -> list[dict]:
-    if not packs_dir.exists(): return []
     out = []
-    for dist in sorted(metadata.distributions(path=[str(packs_dir)]), key=lambda d: canonical(d.metadata["Name"])):
-        eps = [ep.name for ep in dist.entry_points if ep.group == "mcp_remote_sudo.packs"]
-        out.append({"distribution": canonical(dist.metadata["Name"]), "version": dist.version, "entry_points": eps})
+    for name, tree in installed_trees(packs_dir).items():
+        dist = _dist_in(tree)
+        eps = [ep.name for ep in dist.entry_points if ep.group == "mcp_remote_sudo.packs"] if dist else []
+        out.append({"distribution": name, "version": dist.version if dist else None, "entry_points": eps})
     return out
+
+
+def search_paths(packs_dir: str | Path) -> list[str]:
+    """What the service appends to sys.path: one directory per installed distribution."""
+    return [str(p) for p in installed_trees(Path(packs_dir)).values()]
