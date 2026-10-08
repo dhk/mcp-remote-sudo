@@ -3,7 +3,7 @@ import argparse, inspect, os, socket
 from typing import Any, Callable, Sequence
 from mcp.server.fastmcp import FastMCP
 from . import packs
-from .authority import Authority, Decision
+from .authority import Authority
 from .receipts import ReceiptWriter
 
 class Runtime:
@@ -12,10 +12,7 @@ class Runtime:
         binding=authority.check_binding(agent=agent,session=session,host=host)
         if not binding.allowed: raise ValueError(binding.reason)
     def invoke(self,tool:str,args:dict[str,Any],fn:Callable[...,Any],gated:Sequence[str]=())->Any:
-        d=self.authority.evaluate(tool,args)
-        if d.allowed:
-            unpinned=[g for g in gated if g not in ((d.rule or {}).get("args") or {})]
-            if unpinned: d=Decision(False,f"unconstrained_argument:{unpinned[0]}",d.rule)
+        d=self.authority.evaluate(tool,args,gated=tuple(gated))
         base={"manifest_id":self.authority.manifest["metadata"]["id"],"manifest_version":self.authority.manifest["metadata"].get("version"),"manifest_hash":self.authority.manifest_hash,"agent":self.agent,"session":self.session,"host":self.host,"tool":tool,"arguments":args,"decision":"allow" if d.allowed else "deny","reason":d.reason}
         if not d.allowed:
             self.receipts.write({**base,"result":"denied"}); raise PermissionError(f"{tool}: {d.reason}")

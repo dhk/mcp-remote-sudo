@@ -142,7 +142,10 @@ class Authority:
                 return Decision(False, f"binding_mismatch:{key}")
         return Decision(True, "binding_match")
 
-    def evaluate(self, tool: str, args: dict[str, Any], *, now: datetime | None = None) -> Decision:
+    def evaluate(self, tool: str, args: dict[str, Any], *, now: datetime | None = None,
+                 gated: tuple[str, ...] | list[str] = ()) -> Decision:
+        """`gated`: arguments set to a scope-widening (non-default) value; only rules that constrain all of them
+        can match, so a grant written before such an argument existed keeps its original scope."""
         now = now or datetime.now(timezone.utc)
         if now >= self._parse_time(self.manifest["lifetime"]["notAfter"]):
             return Decision(False, "manifest_expired")
@@ -152,9 +155,17 @@ class Authority:
         candidates = [r for r in self.manifest["allow"] if r["tool"] == tool]
         if not candidates:
             return Decision(False, "tool_not_allowed")
+        unconstrained: str | None = None; considered = False
         for rule in candidates:
+            missing = [g for g in gated if g not in (rule.get("args") or {})]
+            if missing:
+                unconstrained = unconstrained or missing[0]
+                continue
+            considered = True
             if self._args_match(args, rule.get("args", {})):
                 return Decision(True, "allowed", rule)
+        if unconstrained and not considered:
+            return Decision(False, f"unconstrained_argument:{unconstrained}")
         return Decision(False, "arguments_not_allowed")
 
     @staticmethod

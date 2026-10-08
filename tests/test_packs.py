@@ -111,12 +111,32 @@ def test_widening_arguments_require_an_explicit_grant_constraint(tmp_path, monke
         return build_server(rt)
     legacy=server_for({"lines":{"maximum":200}})            # a manifest written before boot/include_firewall existed
     asyncio.run(legacy.call_tool("kernel_wifi_log",{"lines":50}))  # defaults: still allowed
-    for widening in ({"boot":-1},{"include_firewall":True},{"since_minutes":60}):
+    for widening in ({"boot":-1},{"include_firewall":True}):
         with pytest.raises(Exception, match="unconstrained_argument"):
             asyncio.run(legacy.call_tool("kernel_wifi_log",{"lines":50,**widening}))
+    asyncio.run(legacy.call_tool("kernel_wifi_log",{"lines":50,"since_minutes":10}))   # narrows: not gated
     pinned=server_for({"lines":{"maximum":200},"boot":{"minimum":-3,"maximum":0}})
     asyncio.run(pinned.call_tool("kernel_wifi_log",{"lines":50,"boot":-1}))   # explicitly granted
     with pytest.raises(Exception, match="arguments_not_allowed"):
         asyncio.run(pinned.call_tool("kernel_wifi_log",{"lines":50,"boot":-4}))
     rows=[json.loads(x) for x in (tmp_path/"r.jsonl").read_text().splitlines()]
-    assert [r["reason"] for r in rows if r["decision"]=="deny"][:3]==["unconstrained_argument:boot","unconstrained_argument:include_firewall","unconstrained_argument:since_minutes"]
+    assert [r["reason"] for r in rows if r["decision"]=="deny"][:2]==["unconstrained_argument:boot","unconstrained_argument:include_firewall"]
+
+
+def test_gated_argument_can_be_granted_by_a_later_rule():
+    a=Authority({"apiVersion":"mcp-remote-sudo/v1","kind":"TaskAuthority","metadata":{"id":"g"},
+        "binding":{"agent":"a","session":"s","host":"h"},
+        "lifetime":{"notAfter":"2099-01-01T00:00:00Z","renewable":False,"expansion":"prohibited"},
+        "allow":[{"tool":"kernel.wifi.log","args":{"lines":{"maximum":200}}},
+                 {"tool":"kernel.wifi.log","args":{"lines":{"maximum":200},"boot":{"minimum":-3,"maximum":0}}}]})
+    args={"lines":50,"boot":-1,"since_minutes":None,"include_firewall":False}
+    assert a.evaluate("kernel.wifi.log",args,gated=("boot",)).allowed
+    assert a.evaluate("kernel.wifi.log",{**args,"boot":-4},gated=("boot",)).reason=="arguments_not_allowed"
+    assert a.evaluate("kernel.wifi.log",{**args,"include_firewall":True},gated=("include_firewall",)).reason=="unconstrained_argument:include_firewall"
+
+
+def test_journal_query_window_args_are_not_gated():
+    # Without -b/--since, journal.query already reads every boot: boot/since_minutes only narrow it.
+    ops=packs.default_registry().operations
+    assert not any(p.gated for p in ops["journal.query"].params)
+    assert [p.name for p in ops["kernel.wifi.log"].params if p.gated]==["boot","include_firewall"]

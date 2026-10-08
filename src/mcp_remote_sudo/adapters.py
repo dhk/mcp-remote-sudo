@@ -34,7 +34,7 @@ def connectivity_probe(target:str,count:int=4)->dict:
     return {"ping":run(["ping","-n","-c",str(count),"--",target],timeout=min(15, count*2+3))}
 
 # Driver/stack terms matched on token boundaries ("wl" must not match inside "owl" or "IN=wlp2s0"-only noise).
-WIFI_LOG_PATTERN=re.compile(r"(?<![a-z0-9])(?:wl|wl[a-z0-9]\w*|wifi|wi-fi|iwl\w*|ath\d+k\w*|rtw\w*|rtl8\w*|mt76\w*|broadcom|brcm\w*|b43\w*|cfg80211|mac80211|80211|networkmanager|wpa_supplicant)(?![a-z0-9])")
+WIFI_LOG_PATTERN=re.compile(r"(?<![a-z0-9])(?:wl|wl[a-z0-9]\w*|wifi|wi-fi|iwl\w*|ath\d+k\w*|rtw\w*|rtl8xxxu|mt76\w*|mt79\w*|broadcom|brcm\w*|b43\w*|cfg80211|mac80211|80211|networkmanager|wpa_supplicant)(?![a-z0-9])")
 # Netfilter/UFW log lines carry the interface name but are never driver evidence.
 FIREWALL_LOG_PATTERN=re.compile(r"\[UFW [A-Z ]+\]|\bIN=\S* OUT=\S*")
 KERNEL_LOG_SCAN_LINES=5000

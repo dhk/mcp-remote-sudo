@@ -101,12 +101,14 @@ def test_truncated_window_drops_partial_first_line(monkeypatch):
     "kernel: wlan0: deauthenticating",
     "kernel: ath10k_pci 0000:02:00.0: firmware crashed",
     "kernel: rtw88_8822ce 0000:03:00.0: failed to send h2c",
-    "kernel: mt7921e 0000:04:00.0: mt76 message timeout",
+    "kernel: mt7921e 0000:04:00.0: Message 00020007 (seq 11) timeout",
 ])
 def test_common_wifi_drivers_and_interface_names_match(line):
     assert adapters.WIFI_LOG_PATTERN.search(line.lower())
 
 
-@pytest.mark.parametrize("line", ["kernel: owl driver unrelated", "kernel: bowling ball", "kernel: newly attached"])
+@pytest.mark.parametrize("line", ["kernel: owl driver unrelated", "kernel: bowling ball", "kernel: newly attached",
+                                  "kernel: r8169 0000:03:00.0 eth0: RTL8168h/8111h, 00:11:22:33:44:55, XID 541, IRQ 136",
+                                  "kernel: usb 2-1: Product: USB 10/100/1000 LAN rtl8153"])
 def test_unrelated_words_do_not_match(line):
     assert not adapters.WIFI_LOG_PATTERN.search(line.lower())
