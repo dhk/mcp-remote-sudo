@@ -18,7 +18,7 @@ PACK = TaskPack(
                   description="Associated access point: BSSID, channel, frequency, rate, signal."),
         Operation("wifi.driver.status", "wifi_driver_status", adapters.wifi_driver_status,
                   (Param("module", str),),
-                  description="Running kernel, sysfs module state (version, taint, refcnt), bound PCI devices and interfaces."),
+                  description="Running kernel, sysfs module state (version, taint, refcnt), registered drivers, bound devices (any bus) and interfaces."),
         Operation("kernel.wifi.log", "kernel_wifi_log", adapters.kernel_wifi_log,
                   (Param("lines", int, 100), Param("boot", int, 0, gated=True),
                    Param("since_minutes", Optional[int], None), Param("include_firewall", bool, False, gated=True)),
