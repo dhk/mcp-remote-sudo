@@ -157,8 +157,10 @@ after review fails the digest check.
 - **Confirmation (#42).** Mutating operations need per-action confirmation, at one of two strengths the grant chooses:
   - `confirmation: operator` (the default for mutation templates). The helper itself refuses to act until a root-owned
     approval record exists for that exact request: request ID, operation, arguments and manifest hash. The operator
-    creates it with `admin approve <request-id>`, which needs sudo. Code running as the service user cannot forge it, so
-    this control holds even if the service user is compromised.
+    creates it with `admin approve <request-id>`, which needs sudo. Approvals are **single-use and short-lived**: the
+    helper atomically consumes the record (rename-then-unlink in a root-only directory) before dispatching, and refuses
+    any record that is expired or already consumed, so one approval authorizes exactly one execution. Code running as the
+    service user can neither forge nor replay it, so this control holds even if the service user is compromised.
   - `confirmation: elicitation`. The server asks through MCP elicitation, and refuses if the client can't ask. This is
     a convenience and accountability control, **not** a boundary against code running as the service user, which can
     reach the helper socket directly. Against that threat, the boundary is the helper's fixed operation table plus its
