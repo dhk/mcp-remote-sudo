@@ -293,3 +293,47 @@ def test_compiled_extension_modules_are_accepted_and_checked(tmp_path):
     pack_install.install(lf, tmp_path / "packs", Pip({})).commit()
     assert (tmp_path / "packs" / "example-pack" / f"_example_backend{suffix}").exists()
     assert pack_install._module_name(f"_ssl{suffix}") == "_ssl" and "_ssl" in sys.stdlib_module_names
+
+
+def test_a_crash_after_the_swap_is_recovered_by_the_next_run(tmp_path):
+    """Regression (review of #64): .previous-* is the rollback copy, not junk."""
+    install(tmp_path, ["example-pack==1.0"], {}).commit()
+    txn = install(tmp_path, ["example-pack==2.0"], {"example-pack": {"version": "2.0"}})   # ... then the process dies
+    assert [d["version"] for d in pack_install.installed(tmp_path / "packs")] == ["2.0"]
+    with pack_install.locked(tmp_path / "packs") as recovered:
+        assert recovered == ["example-pack"]
+    assert [d["version"] for d in pack_install.installed(tmp_path / "packs")] == ["1.0"]
+    assert not [p for p in (tmp_path / "packs").iterdir() if p.name.startswith(".") and p.name != ".lock"]
+
+
+def test_auditwheel_libs_directories_are_allowed_but_unique(tmp_path):
+    install(tmp_path, ["a-pack==1.0"], {"a-pack": {"name": "a-pack", "top": "a_pack", "extra": ("a_pack.libs",)}}).commit()
+    with pytest.raises(PackInstallError, match="a_pack.libs.*collides"):
+        install(tmp_path, ["b-pack==1.0"], {"b-pack": {"name": "b-pack", "top": "b_pack", "extra": ("a_pack.libs",)}})
+    with pytest.raises(PackInstallError, match="unexpected top-level entry"):
+        install(tmp_path, ["c-pack==1.0"], {"c-pack": {"name": "c-pack", "top": "c_pack", "extra": ("not-ident.libs",)}})
+
+
+def test_install_confirmation_matches_whole_distribution_names(tmp_path, monkeypatch):
+    s = Svc(tmp_path, monkeypatch)
+    fake_wheel(s.packs_dir / "pack", name="pack", top="pack_mod")          # pre-existing, never loaded by the service
+    real = s.write_status
+    def status_without_pack():
+        real(); st = json.loads((s.state / "authority-status.json").read_text()); st["packs"].pop("pack", None)
+        (s.state / "authority-status.json").write_text(json.dumps(st))
+    s.write_status = status_without_pack
+    lf = tmp_path / "lock.txt"; lf.write_text(lock("my-pack==1.0"))
+    s.pip = FakePip({"my-pack": {"name": "my-pack", "top": "my_pack"}})
+    assert s.admin.pack_install(str(lf), yes=True, timeout=2) == ["my-pack==1.0"]
+
+
+def test_pack_operations_wait_their_turn_behind_grants(tmp_path, monkeypatch):
+    import fcntl
+    s = Svc(tmp_path, monkeypatch)
+    lf = tmp_path / "lock.txt"; lf.write_text(lock("example-pack==1.0"))
+    with open(s.manifest.with_name(f".{s.manifest.name}.admin.lock"), "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        with pytest.raises(AdminError, match="in progress"):
+            s.admin.pack_install(str(lf), yes=True, timeout=1)
+        with pytest.raises(AdminError, match="in progress"):
+            s.admin.pack_remove("example-pack", yes=True, timeout=1)

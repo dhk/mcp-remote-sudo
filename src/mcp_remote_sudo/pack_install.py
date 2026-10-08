@@ -110,6 +110,9 @@ def actual_entries(tree: Path) -> set[str]:
     return names
 
 
+LIBS_DIR = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\.libs$")   # auditwheel-vendored shared libraries (e.g. pillow.libs)
+
+
 def _module_name(entry: str) -> str | None:
     """The importable top-level name for a staged entry, or None if it isn't a plain module/package/extension."""
     for suffix in sorted(importlib.machinery.EXTENSION_SUFFIXES, key=len, reverse=True):   # e.g. _cffi_backend.cpython-312-x86_64-linux-gnu.so
@@ -122,17 +125,33 @@ def _module_name(entry: str) -> str | None:
 
 @contextmanager
 def locked(packs_dir: Path):
-    """Exclusive lock over the packs directory for a whole install/remove (incl. restart confirmation)."""
+    """Exclusive lock over the packs directory for a whole install/remove (incl. restart confirmation).
+    Yields the list of distributions recovered from an interrupted run (see ``recover``)."""
     packs_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
     with open(packs_dir / ".lock", "a") as fh:
         try:
             fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise PackInstallError("another pack install/remove is in progress") from None
-        for stale in list(packs_dir.glob(".staging-*")) + list(packs_dir.glob(".previous-*")):
-            # Leftovers of an interrupted run (we hold the lock, so no live run owns them).
-            if stale.is_dir() and not stale.is_symlink(): shutil.rmtree(stale, ignore_errors=True)
-        yield
+        yield recover(packs_dir)
+
+
+def recover(packs_dir: Path) -> list[str]:
+    """Undo an interrupted run (caller holds the lock). ``.previous-*`` holds versions that were swapped out but never
+    confirmed replaced: put them back over the unconfirmed new trees. ``.staging-*`` is unreferenced scratch."""
+    recovered = []
+    for previous in sorted(packs_dir.glob(".previous-*")):
+        if not previous.is_dir() or previous.is_symlink(): continue
+        for tree in sorted(previous.iterdir()):
+            if not tree.is_dir() or tree.is_symlink() or tree.name.startswith("."): continue
+            target = packs_dir / tree.name
+            if target.is_symlink(): continue
+            if target.exists(): shutil.rmtree(target)
+            os.replace(tree, target); recovered.append(tree.name)
+        shutil.rmtree(previous, ignore_errors=True)
+    for staging in packs_dir.glob(".staging-*"):
+        if staging.is_dir() and not staging.is_symlink(): shutil.rmtree(staging, ignore_errors=True)
+    return recovered
 
 
 def _core_top_levels(exclude: Path) -> set[str]:
@@ -184,6 +203,10 @@ def check_staged(staged: dict[str, Path], packs_dir: Path) -> None:
         if dist is None or canonical(dist.metadata["Name"] or "") != name:
             raise PackInstallError(f"{name}: staging does not contain exactly that one distribution")
         for entry in actual_entries(tree):
+            if LIBS_DIR.fullmatch(entry) and (tree / entry).is_dir() and not (tree / entry).is_symlink():
+                if entry in others:
+                    raise PackInstallError(f"{name}: {entry!r} collides with installed pack {others[entry]}")
+                continue   # not importable; only needs to be unique among packs
             mod = _module_name(entry)
             if entry.startswith(".") or mod is None or (tree / entry).is_symlink():
                 raise PackInstallError(f"{name}: unexpected top-level entry {entry!r}")
@@ -251,7 +274,7 @@ def install(lockfile: Path, packs_dir: Path, run: Callable[[Sequence[str]], obje
                 txn._new.add(name)
                 dist = _dist_in(target)
                 txn.installed.append(f"{name}=={dist.version if dist else '?'}")
-        except Exception:
+        except BaseException:   # incl. Ctrl-C between the two renames
             txn.rollback(); raise
         return txn
     finally:

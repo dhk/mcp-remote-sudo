@@ -80,14 +80,15 @@ at lowest priority (`--packs-dir`, set on the unit by the installer). Installati
 2. Refuses any distribution that would replace mcp-remote-sudo or one of its runtime dependencies.
 3. Checks the files **actually staged**, not what the wheel's metadata claims. Every top-level entry must be a plain
    module name, a `.py` file, or a compiled extension module. It must not shadow the standard library, resolve in the
-   core environment, or belong to another installed pack. Wheels with other top-level files (for example a shared
-   `tests/` directory) are refused.
+   core environment, or belong to another installed pack. auditwheel `<name>.libs/` directories are allowed if unique.
+   Wheels with other top-level files (for example a shared `tests/` directory) are refused.
 4. Swaps the new directories in by rename, keeping the previous versions.
 5. Restarts the service and confirms it loaded every newly installed pack. If anything fails, the previous versions are
    restored and the service is restarted again. A restart, rather than a reload, gives a clean import state.
 
-Only one pack operation runs at a time (`pack install` and `pack remove` take a lock), and directories left behind
-by an interrupted run are cleaned up. `pack remove` deletes exactly `/opt/mcp-remote-sudo/packs/<name>`; it never uses a path taken from wheel metadata. It's
+Pack operations take the same admin lock as `grant` and `revoke`, then a lock on the packs directory, so only
+one authority-changing operation runs at a time. If an earlier pack operation was interrupted after swapping, before
+the service confirmed the new packs, the next one restores the previous versions first and restarts the service. `pack remove` deletes exactly `/opt/mcp-remote-sudo/packs/<name>`; it never uses a path taken from wheel metadata. It's
 refused while the active authority uses the pack's operations, or while another installed pack lists it in
 `Requires-Dist`.
 

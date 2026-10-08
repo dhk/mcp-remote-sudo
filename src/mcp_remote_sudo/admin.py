@@ -17,6 +17,7 @@ import secrets
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
@@ -202,10 +203,16 @@ class Admin:
         if not yes and input(f"install packs pinned in {lockfile} into {self.packs_dir} and restart {self.service}? [y/N] ").strip().lower() not in ("y", "yes"):
             raise AdminError("aborted by operator")
         try:
-            with pack_install.locked(self.packs_dir):
+            with self._admin_lock(), pack_install.locked(self.packs_dir) as recovered:
+                self._report_recovery(recovered, timeout)
                 return self._pack_install_locked(lockfile, timeout)
         except pack_install.PackInstallError as exc:
             raise AdminError(str(exc)) from exc
+
+    def _report_recovery(self, recovered: list[str], timeout: float) -> None:
+        if recovered:
+            self.say(f"recovered from an interrupted pack operation: restored previous {recovered}; restarting")
+            self._restart_and_confirm(timeout)
 
     def _pack_install_locked(self, lockfile: str, timeout: float) -> list[str]:
         try:
@@ -213,8 +220,8 @@ class Admin:
         except (pack_install.PackInstallError, OSError) as exc:
             raise AdminError(str(exc)) from exc
         self.say(f"staged and installed: {', '.join(txn.installed)}")
-        expected = {d["distribution"] for d in pack_install.installed(self.packs_dir)
-                    if d["entry_points"] and f"{d['distribution']}==" in " ".join(txn.installed)}
+        names = {spec.split("==", 1)[0] for spec in txn.installed}
+        expected = {d["distribution"] for d in pack_install.installed(self.packs_dir) if d["entry_points"] and d["distribution"] in names}
         try:
             st = self._restart_and_confirm(timeout)
             loaded = {pack_install.canonical(i.get("distribution") or "") for i in (st.get("packs") or {}).values()}
@@ -240,18 +247,19 @@ class Admin:
         return txn.installed
 
     def pack_remove(self, dist: str, *, yes: bool = False, timeout: float = 45.0) -> None:
-        status = self.read_status()
-        if status is None or "packs" not in status:
-            raise AdminError("cannot confirm which operations the pack provides (service status unavailable); refusing")
-        a = self.current(); allowed = a.allowed_tools if a else set()
-        provided = {op for info in status["packs"].values()
-                    if info.get("distribution") and pack_install.canonical(info["distribution"]) == pack_install.canonical(dist)
-                    for op in info.get("operations", [])}
-        referenced = sorted(provided & allowed)
-        if referenced:
-            raise AdminError(f"the active authority still allows {referenced} from {dist}; revoke or re-grant first")
         try:
-            with pack_install.locked(self.packs_dir):
+            with self._admin_lock(), pack_install.locked(self.packs_dir) as recovered:
+                self._report_recovery(recovered, timeout)
+                status = self.read_status()
+                if status is None or "packs" not in status:
+                    raise AdminError("cannot confirm which operations the pack provides (service status unavailable); refusing")
+                a = self.current(); allowed = a.allowed_tools if a else set()
+                provided = {op for info in status["packs"].values()
+                            if info.get("distribution") and pack_install.canonical(info["distribution"]) == pack_install.canonical(dist)
+                            for op in info.get("operations", [])}
+                referenced = sorted(provided & allowed)
+                if referenced:
+                    raise AdminError(f"the active authority still allows {referenced} from {dist}; revoke or re-grant first")
                 return self._pack_remove_locked(dist, allowed, yes=yes, timeout=timeout)
         except pack_install.PackInstallError as exc:
             raise AdminError(str(exc)) from exc
@@ -284,14 +292,21 @@ class Admin:
         raise AdminError(f"{self.service} did not report healthy within {timeout:g}s (see journalctl -u {self.service})")
 
     # -- install + reload ---------------------------------------------------------------------
-    def _install(self, new: Authority, *, yes: bool, timeout: float, action: str) -> Authority:
-        # One admin operation at a time: a concurrent grant's rollback must never undo another operator's revoke.
+    @contextmanager
+    def _admin_lock(self):
+        """One authority-changing admin operation at a time (grant, revoke, pack install/remove). Always taken
+        before the packs lock, so the two locks are acquired in a fixed order."""
         lock_path = self.manifest.with_name(f".{self.manifest.name}.admin.lock")
         with open(lock_path, "a") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise AdminError("another mcp-remote-sudo-admin operation is in progress") from None
+            yield
+
+    def _install(self, new: Authority, *, yes: bool, timeout: float, action: str) -> Authority:
+        # A concurrent grant's rollback must never undo another operator's revoke.
+        with self._admin_lock():
             return self._install_locked(new, yes=yes, timeout=timeout, action=action)
 
     def _install_locked(self, new: Authority, *, yes: bool, timeout: float, action: str) -> Authority:
