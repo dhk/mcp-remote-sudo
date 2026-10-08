@@ -54,5 +54,5 @@ disk = "mcp_remote_disk.pack:PACK"
 The operator installs the distribution into the service's virtualenv. This becomes
 `mcp-remote-sudo-admin pack install` in #38. A grant then authorizes the specific operations.
 
-The built-in packs are `core` (`system.info`, `network.status`, `systemd.status`, `journal.query`) and `wifi`
+The built-in packs are `core` (`system.info`, `network.status`, `systemd.status`, `journal.query`, `journal.boots`) and `wifi`
 (`wifi.status`, `wifi.scan`, `wifi.driver.status`, `kernel.wifi.log`, `network.probe`).
