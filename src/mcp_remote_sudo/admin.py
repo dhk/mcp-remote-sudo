@@ -13,6 +13,7 @@ import fcntl
 import hashlib
 import json
 import os
+import secrets
 import subprocess
 import sys
 import time
@@ -77,7 +78,7 @@ class Admin:
     def __init__(self, manifest: str, state_dir: str, receipts: str, service: str,
                  registry: packs.Registry | None = None, out=sys.stdout):
         self.manifest = Path(manifest); self.status_path = Path(state_dir) / "authority-status.json"
-        self.receipts = Path(receipts); self.service = service; self.out = out
+        self.receipts = Path(receipts); self.service = service; self.out = out; self.session_mode_override: str | None = None
         # Built-in packs only: importing external pack code as root is exactly what the pack design forbids.
         self.registry = registry or packs.Registry(packs.builtin_packs())
 
@@ -86,6 +87,20 @@ class Admin:
 
     def current(self) -> Authority | None:
         return _load(self.manifest) if self.manifest.exists() else None
+
+    def _session_mode(self) -> str:
+        """'manifest' when the service takes its session from the manifest, 'fixed' for a legacy --session service.
+        Never guessed: without a readable status file the operator must say which (--session-mode)."""
+        if self.session_mode_override:
+            return self.session_mode_override
+        st = self.read_status()
+        mode = (st or {}).get("session_mode")
+        if mode in ("manifest", "fixed"):
+            return mode
+        if st is not None and "session_mode" not in st:
+            return "fixed"   # a service from before #39 reports no mode and always runs a fixed session
+        raise AdminError(f"cannot determine the service's session mode ({self.status_path} unavailable); "
+                         f"pass --session-mode manifest|fixed")
 
     def read_status(self) -> dict[str, Any] | None:
         try:
@@ -112,6 +127,11 @@ class Admin:
         new = _load(path)
         if _expires_in(new) <= 0:
             raise AdminError("refusing to grant an already-expired authority")
+        if self._session_mode() == "manifest":
+            # Each grant is its own session, so receipts group by investigation.
+            m = json.loads(json.dumps(new.manifest))
+            m["binding"]["session"] = f"sess-{now().strftime('%Y%m%dT%H%M%SZ')}-{secrets.token_hex(3)}"
+            new = Authority(m)
         return self._install(new, yes=yes, timeout=timeout, action="grant")
 
     def revoke(self, *, yes: bool = False, timeout: float = 45.0) -> Authority:
@@ -143,6 +163,7 @@ class Admin:
         else:
             loaded = "matches" if a and st.get("manifest_hash") == a.manifest_hash else "DIFFERS from file on disk"
             self.say(f"service loaded: {st.get('manifest_hash')} ({loaded}); last reload ok={st.get('ok')} at {st.get('at')}")
+            self.say(f"session: {st.get('session')} ({st.get('session_mode', 'fixed')})")
             if st.get("error"): self.say(f"last reload error: {st['error']}")
         svc = run(["systemctl", "show", self.service, "-p", "ActiveState", "-p", "NRestarts", "--value"])
         if svc.returncode == 0:
@@ -180,8 +201,11 @@ class Admin:
 
     def _install_locked(self, new: Authority, *, yes: bool, timeout: float, action: str) -> Authority:
         current = self.current()
-        if current is not None and new.manifest["binding"] != current.manifest["binding"]:
-            raise AdminError(f"binding {new.manifest['binding']} does not match the active manifest's binding {current.manifest['binding']}")
+        if current is not None:
+            keys = ("agent", "host") if self._session_mode() == "manifest" else ("agent", "session", "host")
+            want = {k: current.manifest["binding"][k] for k in keys}; got = {k: new.manifest["binding"][k] for k in keys}
+            if got != want:
+                raise AdminError(f"binding {got} does not match the active manifest's binding {want}")
         self.out.write(diff_text(current, new))
         if not yes and input(f"{action} this authority? [y/N] ").strip().lower() not in ("y", "yes"):
             raise AdminError("aborted by operator")
@@ -272,6 +296,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--state-dir", default=DEFAULT_STATE_DIR)
     p.add_argument("--receipts", default=DEFAULT_RECEIPTS)
     p.add_argument("--service", default=DEFAULT_SERVICE)
+    p.add_argument("--session-mode", choices=("manifest", "fixed"), default=None,
+                   help="override the service's session mode when its status file is unavailable")
     sub = p.add_subparsers(dest="command", required=True)
     sub.add_parser("validate", help="validate a manifest file").add_argument("file")
     sub.add_parser("diff", help="diff a manifest file against the active authority").add_argument("file")
@@ -286,6 +312,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     pk_sub.add_parser("list", help="installed packs and which operations the active authority exposes")
     a = p.parse_args(argv)
     admin = Admin(a.manifest, a.state_dir, a.receipts, a.service)
+    admin.session_mode_override = a.session_mode
     try:
         if a.command == "validate": admin.validate(a.file)
         elif a.command == "diff": admin.diff(a.file)

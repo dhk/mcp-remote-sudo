@@ -39,6 +39,8 @@ grep -Fq 'chmod 0755 "$PREFIX/src/install/bootstrap.sh" "$PREFIX/src/install/ins
 refute grep -Eq '0\.0\.0\.0|NOPASSWD: *ALL|chmod +777|shell=True' "$INSTALL"
 grep -q 'NoNewPrivileges=true' "$INSTALL"
 grep -qx 'RestartForceExitStatus=SIGHUP' "$INSTALL"
+# Sessions come from the manifest (#39): the unit must not pin one.
+refute grep -q '^ExecStart=.*--session' "$INSTALL"
 grep -q 'ProtectSystem=strict' "$INSTALL"
 
 # The server currently uses the MCP SDK 1.x FastMCP API; do not allow a fresh
