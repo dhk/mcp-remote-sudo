@@ -95,12 +95,10 @@ allow:
     args:
       unit:
         enum: [NetworkManager.service]
-  - tool: kernel.module.set
+  - tool: wifi.driver.status
     args:
-      name:
+      module:
         enum: [b43, wl]
-      state:
-        enum: [loaded, unloaded]
 deny:
   - tool: shell.exec
   - tool: package.install

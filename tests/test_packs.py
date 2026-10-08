@@ -86,3 +86,11 @@ def test_duplicate_operation_or_tool_names_rejected():
 def test_normalize_drops_unknown_and_fills_defaults():
     op=Operation("n.op","n_op",dict,(Param("a",str),Param("b",int,3)))
     assert op.normalize({"a":"x","zzz":1})=={"a":"x","b":3}
+
+
+def test_readme_example_manifest_resolves_against_installed_packs():
+    import re, yaml
+    from pathlib import Path
+    readme=(Path(__file__).resolve().parents[1]/"README.md").read_text()
+    block=next(b for b in re.findall(r"```yaml\n(.*?)```", readme, re.S) if "kind: TaskAuthority" in b)
+    packs.default_registry().require(Authority(yaml.safe_load(block)).allowed_tools)
