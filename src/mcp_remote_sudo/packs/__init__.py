@@ -39,6 +39,7 @@ class Operation:
     description: str = ""
     mutating: bool = False
     privileges: tuple[str, ...] = ()   # host privileges the adapter needs, e.g. "journal-read"
+    needs_runtime: bool = False        # adapter receives the server Runtime as its first argument
 
     def gated_in_use(self, args: dict[str, Any]) -> list[str]:
         return [p.name for p in self.params if p.gated and p.name in args and args[p.name] != p.default]
@@ -104,6 +105,11 @@ def discover_packs() -> list[TaskPack]:
         pack = obj() if callable(obj) and not isinstance(obj, TaskPack) else obj
         if not isinstance(pack, TaskPack):
             raise PackError(f"entry point {ep.name} did not provide a TaskPack")
+        runtime_ops = [op.name for op in pack.operations if op.needs_runtime]
+        if runtime_ops:
+            # needs_runtime hands the adapter the whole Runtime: built-in operations only. This guards against API
+            # misuse; it is not isolation (pack code runs in-process with the service's privileges).
+            raise PackError(f"external pack {pack.name} may not declare needs_runtime operations: {runtime_ops}")
         found.append(pack)
     return found
 

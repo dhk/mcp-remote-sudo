@@ -25,6 +25,8 @@ PACK = TaskPack(
             description="Usage for one mount point.",
             mutating=False,             # mutating operations will require per-action confirmation (#42)
             privileges=(),              # host privileges the adapter needs, e.g. "journal-read", "icmp"
+            # needs_runtime=True passes the server Runtime to the adapter. Built-in packs only; external packs
+            # declaring it are refused (an API guard, not isolation: see "Trust" below).
         ),
     ),
 )
@@ -41,6 +43,13 @@ PACK = TaskPack(
 - **Unknown operations fail closed.** If the active authority allows an operation that no installed pack provides, the
   server refuses to start.
 
+## Trust
+
+Installed packs are **not sandboxed**. An external pack's code runs in-process with the service's full privileges:
+it can reach the authority, the receipt log and the network that the service user can reach. The manifest limits
+which operations an agent can *invoke*, but it does not contain a malicious pack. Install only packs you trust, pinned
+by hash.
+
 ## Registering an external pack
 
 Expose the `TaskPack`, or a zero-argument callable that returns one, under the `mcp_remote_sudo.packs` entry-point
@@ -54,5 +63,5 @@ disk = "mcp_remote_disk.pack:PACK"
 The operator installs the distribution into the service's virtualenv. This becomes
 `mcp-remote-sudo-admin pack install` in #38. A grant then authorizes the specific operations.
 
-The built-in packs are `core` (`system.info`, `network.status`, `systemd.status`, `journal.query`, `journal.boots`) and `wifi`
+The built-in packs are `core` (`system.info`, `network.status`, `systemd.status`, `journal.query`, `journal.boots`, `receipts.tail`) and `wifi`
 (`wifi.status`, `wifi.scan`, `wifi.link`, `wifi.driver.status`, `kernel.wifi.log`, `network.probe`).

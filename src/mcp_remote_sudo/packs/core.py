@@ -4,6 +4,14 @@ from typing import Optional
 from .. import adapters
 from . import Operation, Param, TaskPack
 
+
+def receipts_tail(runtime, lines: int = 20) -> dict:
+    """Receipts recorded under the active authority (this manifest hash only), oldest first."""
+    if not isinstance(lines, int) or isinstance(lines, bool) or lines < 1 or lines > 200:
+        raise ValueError("lines must be between 1 and 200")
+    rows = runtime.receipts.tail(lines, manifest_hash=runtime.authority.manifest_hash)
+    return {"manifest_hash": runtime.authority.manifest_hash, "receipts": rows, "returned": len(rows)}
+
 PACK = TaskPack(
     name="core",
     version="1",
@@ -26,5 +34,9 @@ PACK = TaskPack(
                   (Param("limit", int, 20),),
                   description="Most recent boots with first/last journal entry.",
                   privileges=("journal-read",)),
+        Operation("receipts.tail", "receipts_tail", receipts_tail,
+                  (Param("lines", int, 20),),
+                  description="Receipts recorded under the active authority (bounded), oldest first.",
+                  needs_runtime=True),
     ),
 )
