@@ -118,7 +118,10 @@ server fails at startup.
   (`--only-binary :all: --require-hashes --no-deps`), so no build hooks run as root.
 - **Pack code never runs as root.** Packs are installed with `pip --target` into a separate directory
   (`/opt/mcp-remote-sudo/packs`) that is *not* a site directory, so `.pth` startup files in a wheel are never executed.
-  Only the unprivileged service adds that directory to its import path, via `PYTHONPATH` in the unit.
+  Only the unprivileged service adds that directory to its import path. It **appends** the directory to `sys.path`
+  itself, after the standard library and the core virtualenv, and never uses `PYTHONPATH`. That way a pack can't
+  shadow `mcp_remote_sudo` or any of its dependencies. Installation also refuses any wheel whose top-level import names
+  collide with the standard library, the core virtualenv or another installed pack.
 - **The admin command runs isolated.** It runs from the core virtualenv in isolated mode (`python -I`, which ignores
   `PYTHONPATH`), and it never imports external pack code. `pack list` reads distribution metadata without importing.
   Whether a grant's operations are provided by installed packs is checked by the **service** at reload, and a failed
@@ -184,8 +187,8 @@ or merge conflicts.
 | Lane | Issues | Files | Order |
 |---|---|---|---|
 | Docs | #30, #31 | `docs/design/*`, `docs/research/*` | parallel with everything |
-| Installer | #36, then helper installation as part of #41 | `install/*`, `tests/test_installer.sh`, `docs/installation/*` | parallel with the runtime lane until #41 |
-| Runtime | #48 → #32 → #33 → #34 → #35 → #37 → #38 → #39 → #40 → #41 → #42 → #43 | `src/*`, `tests/*.py`, `pyproject.toml`, `docs/task-packs/*` | strictly one after another |
+| Installer | #36 ✓, #51 ✓, #56 (after #39), then helper installation as part of #41 | `install/*`, `tests/test_installer.sh`, `docs/installation/*` | parallel with the runtime lane |
+| Runtime | #48 → #32 → #33 → #34 → #35 → #37 → #38 → #39 → #54 → #40 → #41 → #42 → #43 | `src/*`, `tests/*.py`, `pyproject.toml`, `docs/task-packs/*` | strictly one after another |
 
 Other rules:
 
