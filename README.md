@@ -85,7 +85,7 @@ binding:
   session: sess_01
   host: lab-host-01
 lifetime:
-  ttl: 30m
+  notAfter: "2026-10-03T18:30:00Z"
   renewable: false
   expansion: prohibited
 allow:

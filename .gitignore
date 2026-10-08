@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local Claude Code settings and helpers (not shared)
+.claude/settings.local.json
+.claude/gate.sh
+.claude/worktrees/

@@ -38,3 +38,58 @@ def test_wifi_pack_constraints_are_manifest_enforced():
     assert not a.evaluate("kernel.wifi.log",{"lines":500}).allowed
     assert a.evaluate("network.probe",{"target":"1.1.1.1","count":4}).allowed
     assert not a.evaluate("network.probe",{"target":"8.8.8.8","count":4}).allowed
+
+
+@pytest.mark.parametrize("section,key,value", [
+    ("metadata","owner","x"), ("binding","user","x"), ("lifetime","ttl","30m"),
+    ("lifetime","notAftr","2099-01-01T00:00:00Z"), ("receipts","path","/tmp/r"),
+])
+def test_unknown_nested_field_fails_closed(section, key, value):
+    m=manifest(); m[section][key]=value
+    with pytest.raises(ManifestError, match=f"{section} has unknown fields"): Authority(m)
+
+
+@pytest.mark.parametrize("section,key,value", [
+    ("metadata","version","1"), ("metadata","version",True), ("binding","host",7),
+    ("lifetime","renewable","false"), ("receipts","required","yes"),
+])
+def test_nested_field_type_checked(section, key, value):
+    m=manifest(); m[section][key]=value
+    with pytest.raises(ManifestError, match="invalid type"): Authority(m)
+
+
+@pytest.mark.parametrize("section,key", [("metadata","id"),("binding","session"),("receipts","required")])
+def test_missing_nested_required_field(section, key):
+    m=manifest(); del m[section][key]
+    with pytest.raises(ManifestError, match=f"missing required field: {section}.{key}"): Authority(m)
+
+
+@pytest.mark.parametrize("spec", [
+    {"maximun":500}, {}, {"enum":"NetworkManager.service"}, {"enum":[]}, {"maximum":"500"},
+    {"minimum":True}, {"minimum":5,"maximum":1}, ["a","b"], None,
+])
+def test_invalid_constraint_fails_at_load(spec):
+    m=manifest(); m["allow"][1]["args"]["lines"]=spec
+    with pytest.raises(ManifestError): Authority(m)
+
+
+def test_valid_optional_fields_and_exact_value_constraint_load():
+    m=manifest(); m["metadata"]["purpose"]="diagnose"
+    m["allow"].append({"tool":"wifi.driver.status","args":{"module":"wl"}})
+    a=Authority(m)
+    assert a.evaluate("wifi.driver.status",{"module":"wl"}).allowed
+    assert not a.evaluate("wifi.driver.status",{"module":"b43"}).allowed
+
+
+def test_installer_baseline_manifest_still_loads():
+    m=manifest(); del m["receipts"]; m["deny"]=[]
+    m["allow"]=[{"tool":"journal.query","args":{"lines":{"minimum":1,"maximum":500}}}]
+    Authority(m)
+
+
+def test_readme_example_manifest_is_valid():
+    import re, yaml
+    from pathlib import Path
+    readme=(Path(__file__).resolve().parents[1]/"README.md").read_text()
+    block=next(b for b in re.findall(r"```yaml\n(.*?)```", readme, re.S) if "kind: TaskAuthority" in b)
+    Authority(yaml.safe_load(block))
