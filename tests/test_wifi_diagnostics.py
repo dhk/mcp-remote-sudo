@@ -102,6 +102,16 @@ def test_truncated_window_drops_partial_first_line(monkeypatch):
     "kernel: ath10k_pci 0000:02:00.0: firmware crashed",
     "kernel: rtw88_8822ce 0000:03:00.0: failed to send h2c",
     "kernel: mt7921e 0000:04:00.0: Message 00020007 (seq 11) timeout",
+    "kernel: ieee80211 phy0: Selected rate control algorithm 'minstrel_ht'",
+    "kernel: nl80211: failed to send event",
+    "kernel: rtl8723be 0000:02:00.0: Using firmware rtlwifi/rtl8723befw_36.bin",
+    "kernel: rtl8821ae 0000:03:00.0: firmware loaded",
+    "kernel: mwifiex_pcie 0000:01:00.0: info: FW download over",
+    "kernel: rt2800usb 1-1:1.0: rt2x00usb_vendor_request: Error",
+    "kernel: r8188eu 1-1:1.0: firmware: direct-loading",
+    "kernel: ath: EEPROM regdomain: 0x0",
+    "kernel: brcmfmac: brcmf_c_preinit_dcmds: Firmware: BCM4345/6",
+    "kernel: ERROR @wl_notify_scan_status : ",
 ])
 def test_common_wifi_drivers_and_interface_names_match(line):
     assert adapters.WIFI_LOG_PATTERN.search(line.lower())
@@ -109,6 +119,9 @@ def test_common_wifi_drivers_and_interface_names_match(line):
 
 @pytest.mark.parametrize("line", ["kernel: owl driver unrelated", "kernel: bowling ball", "kernel: newly attached",
                                   "kernel: r8169 0000:03:00.0 eth0: RTL8168h/8111h, 00:11:22:33:44:55, XID 541, IRQ 136",
-                                  "kernel: usb 2-1: Product: USB 10/100/1000 LAN rtl8153"])
+                                  "kernel: usb 2-1: Product: USB 10/100/1000 LAN rtl8153",
+                                  "kernel: brcm-pcie fd500000.pcie: link up, 5.0 GT/s PCIe x1 (SSC)",
+                                  "kernel: bnxt_en 0000:3b:00.0 eth0: Broadcom BCM57414 NetXtreme-E 10Gb/25Gb RDMA Ethernet Controller",
+                                  "kernel: health: path loaded", "kernel: breath of fresh air"])
 def test_unrelated_words_do_not_match(line):
     assert not adapters.WIFI_LOG_PATTERN.search(line.lower())

@@ -34,7 +34,13 @@ def connectivity_probe(target:str,count:int=4)->dict:
     return {"ping":run(["ping","-n","-c",str(count),"--",target],timeout=min(15, count*2+3))}
 
 # Driver/stack terms matched on token boundaries ("wl" must not match inside "owl" or "IN=wlp2s0"-only noise).
-WIFI_LOG_PATTERN=re.compile(r"(?<![a-z0-9])(?:wl|wl[a-z0-9]\w*|wifi|wi-fi|iwl\w*|ath\d+k\w*|rtw\w*|rtl8xxxu|mt76\w*|mt79\w*|broadcom|brcm\w*|b43\w*|cfg80211|mac80211|80211|networkmanager|wpa_supplicant)(?![a-z0-9])")
+WIFI_LOG_PATTERN=re.compile(
+    # Distinctive Wi-Fi stack and driver names: safe as substrings (cfg80211/mac80211/ieee80211/nl80211, iwlwifi,
+    # rtlwifi, mwifiex, brcmfmac/brcmsmac, b43, ath9k/10k/11k/12k, mt76/mt79xx, rtw88/89, rtl8xxxu, r8188eu, rt2x00/rt2800).
+    r"80211|wifi|wi-fi|wpa_supplicant|networkmanager|brcmf|brcmsmac|b43|ath\d+k|mt7[69]|rtw8|rtl8xxxu|r8188eu|rt2x00|rt2800"
+    # Short or ambiguous tokens need boundaries: the wl driver, wl*/wlan* interface names, generic `ath:` lines and
+    # Realtek Wi-Fi models (rtl8723be, rtl8821ae, rtl8188eu/cu, rtl8192se) without matching Ethernet RTL8168h/rtl8153.
+    r"|(?<![a-z0-9])(?:wl|wl[a-z0-9]\w*|ath|rtl8\d{3}(?:[a-e]e|[ce]u|se))(?![a-z0-9])")
 # Netfilter/UFW log lines carry the interface name but are never driver evidence.
 FIREWALL_LOG_PATTERN=re.compile(r"\[UFW [A-Z ]+\]|\bIN=\S* OUT=\S*")
 KERNEL_LOG_SCAN_LINES=5000
