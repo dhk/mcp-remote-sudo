@@ -84,10 +84,11 @@ def test_remediate_template_proposal():
                         "allow": [{"tool": "authority.propose"}]})
     m, warnings = proposals.render(registry=reg, active=active, purpose="Recover wedged wl", ttl_minutes=60, constraints=None,
                                    operations=["wifi.radio.set", "service.restart", "kernel.module.reload"])
-    rules = {r["tool"]: r["args"] for r in m["allow"]}
+    rules = {r["tool"]: r.get("args", {}) for r in m["allow"]}
     assert rules["kernel.module.reload"] == {"name": {"enum": ["wl"]}}
     assert rules["service.restart"]["unit"]["enum"] == ["wpa_supplicant.service", "NetworkManager.service"]
-    assert {"wifi.radio.set is a mutating operation", "kernel.module.reload is a mutating operation"} <= set(warnings)
+    assert {"wifi.radio.set is a mutating operation (confirmation: operator)",
+            "kernel.module.reload is a mutating operation (confirmation: operator)"} <= set(warnings)
     assert all("confirmation" not in r for r in m["allow"])   # default = operator approval per action
 
 
