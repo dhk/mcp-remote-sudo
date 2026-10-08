@@ -113,3 +113,28 @@ def test_fixed_session_service_rejects_a_minted_session_even_if_status_lies(tmp_
     with pytest.raises(admin_mod.AdminError, match="rejected"):
         adm.grant(str(cand),yes=True,timeout=2)
     assert rt.session=="baseline" and yaml.safe_load(m.read_text())["binding"]["session"]=="baseline"
+
+
+def test_new_admin_against_a_pre_39_service_treats_it_as_fixed(tmp_path, monkeypatch):
+    """Upgrade path: an old service's status has no session_mode field -> fixed; nothing minted; grant loads."""
+    m=tmp_path/"authority.yaml"; m.write_text(yaml.safe_dump(manifest("baseline")))
+    rt=Runtime(Authority.load(m),ReceiptWriter(tmp_path/"r.jsonl"),agent="mcp-remote-sudo",session="baseline",host="lobster")
+    reg=packs.default_registry(); server=build_server(rt,registry=reg)
+    rl=AuthorityReloader(server,rt,reg,m,tmp_path/"authority-status.json")
+    def old_status():
+        rl.write_status(True)
+        st=json.loads((tmp_path/"authority-status.json").read_text())
+        for k in ("session_mode","session","attempted_hash","attempted_file_sha256"): st.pop(k,None)
+        (tmp_path/"authority-status.json").write_text(json.dumps(st))
+    old_status()
+    def fake_run(argv):
+        if list(argv)[:2]==["systemctl","kill"]:
+            rl.reload(); old_status()
+        class R: returncode=0; stdout=""; stderr=""
+        return R()
+    monkeypatch.setattr(admin_mod,"run",fake_run)
+    adm=Admin(str(m),str(tmp_path),str(tmp_path/"r.jsonl"),"svc",out=io.StringIO())
+    cand=tmp_path/"c.yaml"; cand.write_text(yaml.safe_dump(manifest("baseline",allow=("system.info","network.status"),id="g")))
+    adm.grant(str(cand),yes=True,timeout=2)
+    assert rt.session=="baseline" and "network.status" in rt.authority.allowed_tools
+    assert yaml.safe_load(m.read_text())["binding"]["session"]=="baseline"
