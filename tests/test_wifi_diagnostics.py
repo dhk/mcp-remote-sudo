@@ -114,6 +114,13 @@ def test_truncated_window_drops_partial_first_line(monkeypatch):
     "kernel: ERROR @wl_notify_scan_status : ",
     "kernel: b43-phy0: Broadcom 4311 WLAN found (core revision 13)",
     "kernel: b43legacy-phy0: Loading firmware",
+    "kernel: rtl8723bs: acquire FW from file:rtlwifi/rtl8723bs_nic.bin",
+    "kernel: rtl8188fu 1-1:1.0: firmware loaded",
+    "kernel: rt73usb 1-2:1.0: firmware error",
+    "kernel: carl9170 1-1:1.0: firmware not found",
+    "kernel: wcn36xx a204000.wcnss: WCNSS firmware version",
+    "kernel: zd1211rw 1-1:1.0: phy0",
+    "kernel: iwlmvm: queue stuck",
 ])
 def test_common_wifi_drivers_and_interface_names_match(line):
     assert adapters.WIFI_LOG_PATTERN.search(line.lower())
@@ -128,6 +135,8 @@ def test_common_wifi_drivers_and_interface_names_match(line):
                                   "kernel: BIOS-e820: [mem 0x00000000b4300000-0x00000000b43fffff] usable",
                                   "kernel: RIP: 0010:foo+0xb43/0x1f0",
                                   "kernel: ACPI: SSDT 0x00000000DB43A000 0004A4 (v02 INTEL)",
-                                  "kernel: BIOS-e820: [mem 0x0000000080211000-0x00000000802fffff] reserved"])
+                                  "kernel: BIOS-e820: [mem 0x0000000080211000-0x00000000802fffff] reserved",
+                                  "kernel: RAX: ffff8e80211c4000 RBX: 0000000000000000",
+                                  "kernel: BIOS-e820: [mem 0x00000000fec80211-0x00000000fec8ffff] reserved"])
 def test_unrelated_words_do_not_match(line):
     assert not adapters.WIFI_LOG_PATTERN.search(line.lower())
