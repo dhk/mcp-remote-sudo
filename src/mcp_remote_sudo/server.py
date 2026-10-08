@@ -10,9 +10,11 @@ import argparse, asyncio, functools, hashlib, inspect, json, logging, os, signal
 import yaml
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Sequence
-from mcp.server.fastmcp import FastMCP
-from . import packs
+from typing import Any, Callable, Optional, Sequence
+from mcp import types as mcp_types
+from mcp.server.fastmcp import Context, FastMCP
+from pydantic import BaseModel
+from . import approvals, packs
 from .authority import Authority
 from .receipts import ReceiptWriter
 
@@ -40,15 +42,64 @@ class Runtime:
         except Exception as exc:
             self.receipts.write({**base,"result":"failed","error":type(exc).__name__}); raise
         self.receipts.write({**base,"result":"success"}); return result
+    def record(self,tool:str,args:dict[str,Any],decision:str,reason:str,result:str,**extra:Any)->None:
+        md=self.authority.manifest["metadata"]
+        self.receipts.write({"manifest_id":md["id"],"manifest_version":md.get("version"),"manifest_hash":self.authority.manifest_hash,"agent":self.agent,"session":self.session,"host":self.host,"tool":tool,"arguments":args,"decision":decision,"reason":reason,"result":result,**extra})
+
+class Confirm(BaseModel):
+    confirm: bool
+
+async def confirm_mutation(runtime:Runtime,op:packs.Operation,args:dict[str,Any],ctx:Any,request_id:str|None)->dict[str,Any]:
+    """Decide how a mutating call proceeds under its rule's confirmation mode (#42).
+    Returns {"proceed": request_id} or {"respond": payload}. Raises PermissionError when refused.
+    The helper independently enforces "operator" mode; this layer only guides the agent and the operator."""
+    decision=runtime.authority.evaluate(op.name,args)
+    if not decision.allowed: return {"proceed":None}   # Runtime.invoke records and raises the denial
+    mode=(decision.rule or {}).get("confirmation","operator")
+    if mode=="grant-only": return {"proceed":approvals.new_request_id()}
+    if mode=="elicitation":
+        supported=False
+        try: supported=ctx is not None and ctx.session.check_client_capability(mcp_types.ClientCapabilities(elicitation=mcp_types.ElicitationCapability()))
+        except Exception: supported=False
+        if not supported:
+            runtime.record(op.name,args,"deny","confirmation_unavailable","denied"); raise PermissionError(f"{op.name}: confirmation_unavailable")
+        answer=await ctx.elicit(f"Allow {op.name} with {json.dumps(args,sort_keys=True)} on {runtime.host}?",schema=Confirm)
+        if getattr(answer,"action",None)!="accept" or not getattr(getattr(answer,"data",None),"confirm",False):
+            runtime.record(op.name,args,"deny","confirmation_declined","denied"); raise PermissionError(f"{op.name}: confirmation_declined")
+        return {"proceed":approvals.new_request_id()}
+    # operator: first call parks the request; the retry carries the request id the operator approved.
+    if request_id is None:
+        if runtime.state_dir is None: raise PermissionError(f"{op.name}: operator approval unavailable (no state dir)")
+        rid=approvals.new_request_id(); approvals.write_pending(runtime.state_dir,rid,op.name,args,runtime.authority.manifest_hash)
+        runtime.record(op.name,args,"pending","awaiting_operator_approval","pending",request_id=rid)
+        return {"respond":{"status":"awaiting_operator_approval","request_id":rid,"operation":op.name,"arguments":args,
+                           "approve_command":f"sudo mcp-remote-sudo-admin approve {rid}",
+                           "next":"After the operator approves, call this tool again with the same arguments and request_id."}}
+    try: pending=approvals.read_pending(runtime.state_dir,request_id)
+    except approvals.ApprovalError as exc:
+        runtime.record(op.name,args,"deny",str(exc),"denied"); raise PermissionError(f"{op.name}: {exc}")
+    if pending["operation"]!=op.name or pending["arguments"]!=args:
+        runtime.record(op.name,args,"deny","request_mismatch","denied",request_id=request_id); raise PermissionError(f"{op.name}: arguments differ from the approved request")
+    return {"proceed":request_id}
 
 def _tool_function(runtime:Runtime, op:packs.Operation)->Callable[...,Any]:
     """An MCP tool callable whose typed signature comes from the pack declaration."""
     adapter=functools.partial(op.adapter,runtime) if op.needs_runtime else op.adapter
-    def call(**supplied:Any)->dict:
-        args=op.normalize(supplied); gated=op.gated_in_use(args)
-        return runtime.invoke(op.name,args,adapter,**({"gated":gated} if gated else {}))
     params=[inspect.Parameter(p.name,inspect.Parameter.KEYWORD_ONLY,annotation=p.type,
                               default=inspect.Parameter.empty if p.default is packs.REQUIRED else p.default) for p in op.params]
+    if op.mutating:
+        async def call(ctx:Context|None=None,request_id:str|None=None,**supplied:Any)->dict:
+            args=op.normalize(supplied)
+            step=await confirm_mutation(runtime,op,args,ctx,request_id)
+            if "respond" in step: return step["respond"]
+            gated=op.gated_in_use(args)
+            return runtime.invoke(op.name,args,functools.partial(adapter,request_id=step["proceed"]),**({"gated":gated} if gated else {}))
+        params+=[inspect.Parameter("request_id",inspect.Parameter.KEYWORD_ONLY,annotation=Optional[str],default=None),
+                 inspect.Parameter("ctx",inspect.Parameter.KEYWORD_ONLY,annotation=Context,default=None)]
+    else:
+        def call(**supplied:Any)->dict:
+            args=op.normalize(supplied); gated=op.gated_in_use(args)
+            return runtime.invoke(op.name,args,adapter,**({"gated":gated} if gated else {}))
     call.__name__=op.tool; call.__doc__=op.description
     call.__signature__=inspect.Signature(params,return_annotation=dict)  # type: ignore[attr-defined]
     return call

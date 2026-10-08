@@ -23,7 +23,8 @@ def helper(tmp_path):
            "test.set": HelperOperation("test.set", lambda state: calls.append(state) or {"state": state}, {"state": str}),
            "test.boom": HelperOperation("test.boom", lambda: 1 / 0, {})}
     m = tmp_path / "authority.yaml"
-    write_manifest(m, [{"tool": "helper.ping"}, {"tool": "test.set", "args": {"state": {"enum": ["on"]}}}, {"tool": "test.boom"}])
+    write_manifest(m, [{"tool": "helper.ping"}, {"tool": "test.set", "args": {"state": {"enum": ["on"]}}, "confirmation": "grant-only"},
+                       {"tool": "test.boom", "confirmation": "grant-only"}])
     h = Helper(manifest=m, receipts=tmp_path / "helper.jsonl", allowed_uid=SERVICE_UID, operations=ops)
     return h, calls, tmp_path
 
@@ -67,7 +68,7 @@ def test_helper_rechecks_the_manifest_independently(helper):
     h, calls, tmp = helper
     write_manifest(tmp / "authority.yaml", [{"tool": "helper.ping"}])   # operator revoked test.set
     assert h.handle(req("test.set", {"state": "on"}), SERVICE_UID)["error"] == "manifest:tool_not_allowed"
-    write_manifest(tmp / "authority.yaml", [{"tool": "test.set"}], not_after="2020-01-01T00:00:00Z")
+    write_manifest(tmp / "authority.yaml", [{"tool": "test.set", "confirmation": "grant-only"}], not_after="2020-01-01T00:00:00Z")
     assert h.handle(req("test.set", {"state": "on"}), SERVICE_UID)["error"] == "manifest:manifest_expired"
     (tmp / "authority.yaml").write_text("garbage: [")
     assert h.handle(req("helper.ping"), SERVICE_UID)["error"] == "manifest_unavailable"

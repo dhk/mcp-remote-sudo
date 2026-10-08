@@ -1,6 +1,6 @@
 # Privileged helper
 
-Status: implemented by #41 (held for operator review). Roadmap §4, "Controlled mutation".
+Status: implemented by #41, with per-action confirmation added by #42 (both held for operator review). Roadmap §4, "Controlled mutation".
 
 ## Why a helper
 
@@ -20,6 +20,7 @@ mcp-remote-sudo (uid mcp-remote-sudo)  ──JSON over /run/mcp-remote-sudo/help
 | What can run | The helper's compiled-in `OPERATIONS` table. The request names an operation; it never supplies code, argv or paths. |
 | Argument shape | Exact parameter set and types per operation. Booleans are never accepted as ints. |
 | Whether the operator allowed it | The helper loads `/etc/mcp-remote-sudo/authority.yaml` itself and evaluates the request, so it doesn't trust the service's decision |
+| Per-action approval (`confirmation: operator`, the default for host-changing operations) | The helper atomically consumes a root-only, single-use, 10-minute approval record in `/var/lib/mcp-remote-sudo-approvals/` (`0700`). The record binds the request ID, operation, arguments and manifest hash. A mismatched attempt is refused and also uses up the record. |
 | Size and time | 64 KiB request limit, 10 s connection timeout, one request per connection |
 | Evidence | Its own hash-chained receipts in `/var/log/mcp-remote-sudo-helper/`, a root-owned `0750` directory. They're kept out of the service's directory so the service user can't unlink or replace them. |
 | OS ceiling | `CapabilityBoundingSet=` (empty until a pack needs a specific capability), `RestrictAddressFamilies=AF_UNIX`, `IPAddressDeny=any`, `ProtectSystem=strict`, `NoNewPrivileges=true` |

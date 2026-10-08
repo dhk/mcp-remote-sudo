@@ -23,7 +23,7 @@ from typing import Any, Sequence
 
 import yaml
 
-from . import pack_install, packs
+from . import approvals, pack_install, packs
 from .authority import Authority, ManifestError
 from .proposals import ProposalError, diff_text, read_for_grant, review_warnings
 from .receipts import verify_chain
@@ -68,7 +68,7 @@ class Admin:
     def __init__(self, manifest: str, state_dir: str, receipts: str, service: str,
                  registry: packs.Registry | None = None, out=sys.stdout, packs_dir: str = DEFAULT_PACKS_DIR):
         self.manifest = Path(manifest); self.status_path = Path(state_dir) / "authority-status.json"
-        self.packs_dir = Path(packs_dir)
+        self.packs_dir = Path(packs_dir); self.approvals_dir = Path(approvals.APPROVALS_DIR)
         self.receipts = Path(receipts); self.service = service; self.out = out; self.session_mode_override: str | None = None
         # Built-in packs only: importing external pack code as root is exactly what the pack design forbids.
         self.registry = registry or packs.Registry(packs.builtin_packs())
@@ -154,6 +154,31 @@ class Admin:
             "allow": [], "deny": [],
         })
         return self._install(revoked, yes=yes, timeout=timeout, action="revoke")
+
+    def approve(self, request_id: str, *, yes: bool = False) -> Path:
+        """Approve exactly one pending mutating request (single use, short-lived, bound to the active manifest)."""
+        try:
+            pending = approvals.read_pending(self.status_path.parent, request_id)
+        except approvals.ApprovalError as exc:
+            raise AdminError(str(exc)) from exc
+        current = self.current()
+        if current is None or pending.get("manifest_hash") != current.manifest_hash:
+            raise AdminError("the request was made under a different authority than the active one; ask the agent to retry")
+        decision = current.evaluate(pending["operation"], pending["arguments"])
+        if not decision.allowed:
+            raise AdminError(f"the active authority does not allow this request ({decision.reason})")
+        self.say(f"request:   {request_id}")
+        self.say(f"operation: {pending['operation']}")
+        self.say(f"arguments: {json.dumps(pending['arguments'], sort_keys=True)}")
+        self.say(f"authority: {current.manifest['metadata']['id']} ({current.manifest_hash})")
+        if not yes and input("approve this single execution? [y/N] ").strip().lower() not in ("y", "yes"):
+            raise AdminError("aborted by operator")
+        try:
+            path = approvals.approve(self.approvals_dir, request_id, pending["operation"], pending["arguments"], current.manifest_hash)
+        except approvals.ApprovalError as exc:
+            raise AdminError(str(exc)) from exc
+        self.say(f"approved for one execution within {int(approvals.APPROVAL_TTL.total_seconds() // 60)} minutes")
+        return path
 
     def status(self) -> None:
         a = self.current()
@@ -419,6 +444,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--session-mode", choices=("manifest", "fixed"), default=None,
                    help="override the service's session mode when its status file is unavailable")
     p.add_argument("--packs-dir", default=DEFAULT_PACKS_DIR)
+    p.add_argument("--approvals-dir", default=approvals.APPROVALS_DIR)
     sub = p.add_subparsers(dest="command", required=True)
     sub.add_parser("validate", help="validate a manifest file").add_argument("file")
     sub.add_parser("diff", help="diff a manifest file against the active authority").add_argument("file")
@@ -428,6 +454,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     r = sub.add_parser("revoke", help="replace the active authority with an expired deny-all authority")
     r.add_argument("--yes", action="store_true"); r.add_argument("--timeout", type=float, default=45.0)
     sub.add_parser("status", help="show the active authority and what the service has loaded")
+    ap = sub.add_parser("approve", help="approve one pending mutating request (single use)")
+    ap.add_argument("request_id"); ap.add_argument("--yes", action="store_true")
     rc = sub.add_parser("receipts", help="receipt operations"); rc_sub = rc.add_subparsers(dest="receipts_command", required=True)
     rc_sub.add_parser("verify", help="verify the receipt hash chain")
     pk = sub.add_parser("pack", help="Task Pack operations"); pk_sub = pk.add_subparsers(dest="pack_command", required=True)
@@ -439,6 +467,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     a = p.parse_args(argv)
     admin = Admin(a.manifest, a.state_dir, a.receipts, a.service, packs_dir=a.packs_dir)
     admin.session_mode_override = a.session_mode
+    admin.approvals_dir = Path(a.approvals_dir)
     try:
         if a.command == "validate": admin.validate(a.file)
         elif a.command == "diff": admin.diff(a.file)
@@ -449,6 +478,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             else: admin.grant(a.file, yes=a.yes, timeout=a.timeout)
         elif a.command == "revoke": admin.revoke(yes=a.yes, timeout=a.timeout)
         elif a.command == "status": admin.status()
+        elif a.command == "approve": admin.approve(a.request_id, yes=a.yes)
         elif a.command == "receipts": return 0 if admin.receipts_verify() else 1
         elif a.command == "pack" and a.pack_command == "list": admin.pack_list()
         elif a.command == "pack" and a.pack_command == "install": admin.pack_install(a.requirements, yes=a.yes, timeout=a.timeout)
