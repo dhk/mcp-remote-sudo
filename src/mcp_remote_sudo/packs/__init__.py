@@ -107,8 +107,8 @@ def discover_packs() -> list[TaskPack]:
             raise PackError(f"entry point {ep.name} did not provide a TaskPack")
         runtime_ops = [op.name for op in pack.operations if op.needs_runtime]
         if runtime_ops:
-            # needs_runtime hands the adapter the whole Runtime (authority, writable receipts, every manifest's
-            # receipts): built-in operations only.
+            # needs_runtime hands the adapter the whole Runtime: built-in operations only. This guards against API
+            # misuse; it is not isolation (pack code runs in-process with the service's privileges).
             raise PackError(f"external pack {pack.name} may not declare needs_runtime operations: {runtime_ops}")
         found.append(pack)
     return found
