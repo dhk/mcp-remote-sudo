@@ -137,21 +137,39 @@ def locked(packs_dir: Path):
 
 
 def recover(packs_dir: Path) -> list[str]:
-    """Undo an interrupted run (caller holds the lock). ``.previous-*`` holds versions that were swapped out but never
-    confirmed replaced: put them back over the unconfirmed new trees. ``.staging-*`` is unreferenced scratch."""
+    """Undo an interrupted run (caller holds the lock).
+
+    ``.previous-<pid>/`` holds the versions swapped out and a ``.journal`` of every name the run swapped in (written
+    and fsynced before the first rename). Any ``.previous-*`` still present means the run never confirmed its new
+    packs: journaled names are restored from their backup, or removed if they were new. ``.trash-*`` (a committed or
+    rolled-back ``.previous``, renamed atomically before deletion) and ``.staging-*`` are scratch and just deleted."""
     recovered = []
     for previous in sorted(packs_dir.glob(".previous-*")):
         if not previous.is_dir() or previous.is_symlink(): continue
-        for tree in sorted(previous.iterdir()):
-            if not tree.is_dir() or tree.is_symlink() or tree.name.startswith("."): continue
-            target = packs_dir / tree.name
-            if target.is_symlink(): continue
-            if target.exists(): shutil.rmtree(target)
-            os.replace(tree, target); recovered.append(tree.name)
+        journal = previous / ".journal"
+        names = [n for n in (journal.read_text().split() if journal.is_file() else []) if n == canonical(n)]
+        names += [t.name for t in previous.iterdir() if t.is_dir() and not t.name.startswith(".") and t.name not in names]
+        for name in names:
+            target, backup = packs_dir / name, previous / name
+            if target.is_symlink() or "/" in name or name.startswith("."): continue
+            if backup.is_dir() and not backup.is_symlink():
+                if target.exists(): shutil.rmtree(target)
+                os.replace(backup, target)
+            elif target.exists():
+                shutil.rmtree(target)          # new in the interrupted run: never confirmed
+            recovered.append(name)
         shutil.rmtree(previous, ignore_errors=True)
-    for staging in packs_dir.glob(".staging-*"):
-        if staging.is_dir() and not staging.is_symlink(): shutil.rmtree(staging, ignore_errors=True)
+    for scratch in list(packs_dir.glob(".staging-*")) + list(packs_dir.glob(".trash-*")):
+        if scratch.is_dir() and not scratch.is_symlink(): shutil.rmtree(scratch, ignore_errors=True)
     return recovered
+
+
+def _discard(directory: Path) -> None:
+    """Retire a .previous-* atomically (rename) before deleting it, so a half-deleted copy is never 'recovered'."""
+    if not directory.exists(): return
+    trash = directory.with_name(f".trash-{directory.name.split('-', 1)[-1]}-{os.getpid()}")
+    os.replace(directory, trash)
+    shutil.rmtree(trash, ignore_errors=True)
 
 
 def _core_top_levels(exclude: Path) -> set[str]:
@@ -231,7 +249,7 @@ class Transaction:
     _new: set[str] = field(default_factory=set)         # names whose new tree is in place
 
     def commit(self) -> None:
-        shutil.rmtree(self._old, ignore_errors=True)
+        _discard(self._old)
 
     def rollback(self) -> None:
         for name in reversed(self._swapped):
@@ -239,7 +257,7 @@ class Transaction:
             previous = self._old / name
             if target.exists() and (previous.exists() or name in self._new): shutil.rmtree(target)
             if previous.exists(): os.replace(previous, target)
-        shutil.rmtree(self._old, ignore_errors=True)
+        _discard(self._old)
 
 
 def install(lockfile: Path, packs_dir: Path, run: Callable[[Sequence[str]], object], python: str = sys.executable) -> Transaction:
@@ -262,6 +280,8 @@ def install(lockfile: Path, packs_dir: Path, run: Callable[[Sequence[str]], obje
             staged[pin.name] = tree
         check_staged(staged, packs_dir)
         old.mkdir(mode=0o700)
+        with open(old / ".journal", "w") as fh:   # every name this run swaps in, durable before the first rename
+            fh.write("\n".join(staged) + "\n"); fh.flush(); os.fsync(fh.fileno())
         txn = Transaction(packs_dir, [], old)
         try:
             for name, tree in staged.items():

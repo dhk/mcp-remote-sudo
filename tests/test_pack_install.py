@@ -337,3 +337,36 @@ def test_pack_operations_wait_their_turn_behind_grants(tmp_path, monkeypatch):
             s.admin.pack_install(str(lf), yes=True, timeout=1)
         with pytest.raises(AdminError, match="in progress"):
             s.admin.pack_remove("example-pack", yes=True, timeout=1)
+
+
+def test_an_interrupted_fresh_install_is_removed_by_the_next_run(tmp_path):
+    install(tmp_path, ["new-pack==1.0", "old-pack==2.0"],
+            {"new-pack": {"name": "new-pack", "top": "new_pack"}, "old-pack": {"name": "old-pack", "top": "old_pack", "version": "2.0"}})
+    # (no commit: the process died before confirmation; old-pack had no prior version either)
+    with pack_install.locked(tmp_path / "packs") as recovered:
+        assert sorted(recovered) == ["new-pack", "old-pack"]
+    assert pack_install.installed_trees(tmp_path / "packs") == {}
+
+
+def test_mixed_upgrade_and_new_are_both_undone(tmp_path):
+    install(tmp_path, ["example-pack==1.0"], {}).commit()
+    install(tmp_path, ["example-pack==2.0", "new-pack==1.0"],
+            {"example-pack": {"version": "2.0"}, "new-pack": {"name": "new-pack", "top": "new_pack"}})
+    with pack_install.locked(tmp_path / "packs") as recovered:
+        assert sorted(recovered) == ["example-pack", "new-pack"]
+    assert [(d["distribution"], d["version"]) for d in pack_install.installed(tmp_path / "packs")] == [("example-pack", "1.0")]
+
+
+def test_an_interrupted_commit_is_never_mistaken_for_a_rollback_copy(tmp_path, monkeypatch):
+    install(tmp_path, ["example-pack==1.0"], {}).commit()
+    txn = install(tmp_path, ["example-pack==2.0"], {"example-pack": {"version": "2.0"}})
+    def boom(path, ignore_errors=False): raise KeyboardInterrupt   # die mid-delete, after the atomic rename
+    monkeypatch.setattr(pack_install.shutil, "rmtree", boom)
+    with pytest.raises(KeyboardInterrupt):
+        txn.commit()
+    monkeypatch.undo()
+    assert [p.name for p in (tmp_path / "packs").glob(".previous-*")] == []
+    with pack_install.locked(tmp_path / "packs") as recovered:
+        assert recovered == []
+    assert [d["version"] for d in pack_install.installed(tmp_path / "packs")] == ["2.0"]
+    assert not list((tmp_path / "packs").glob(".trash-*"))

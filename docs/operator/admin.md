@@ -88,7 +88,8 @@ at lowest priority (`--packs-dir`, set on the unit by the installer). Installati
 
 Pack operations take the same admin lock as `grant` and `revoke`, then a lock on the packs directory, so only
 one authority-changing operation runs at a time. If an earlier pack operation was interrupted after swapping, before
-the service confirmed the new packs, the next one restores the previous versions first and restarts the service. `pack remove` deletes exactly `/opt/mcp-remote-sudo/packs/<name>`; it never uses a path taken from wheel metadata. It's
+the service confirmed the new packs, the next one first undoes it: it restores the previous versions, removes any packs
+that were new in that run, and restarts the service. `pack remove` deletes exactly `/opt/mcp-remote-sudo/packs/<name>`; it never uses a path taken from wheel metadata. It's
 refused while the active authority uses the pack's operations, or while another installed pack lists it in
 `Requires-Dist`.
 
