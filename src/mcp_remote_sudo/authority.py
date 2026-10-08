@@ -181,7 +181,11 @@ class Authority:
 
 def _is_number(value: Any) -> bool:
     """A finite int/float that is not a bool (bool is an int subclass, and NaN defeats comparisons)."""
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return True  # arbitrary-precision ints are always finite; math.isfinite would overflow on huge ones
+    return isinstance(value, float) and math.isfinite(value)
 
 
 def _same(value: Any, expected: Any) -> bool:

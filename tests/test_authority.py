@@ -130,3 +130,10 @@ def test_readme_example_manifest_is_not_expired():
     block=next(b for b in re.findall(r"```yaml\n(.*?)```", readme, re.S) if "kind: TaskAuthority" in b)
     a=Authority(yaml.safe_load(block))
     assert a.evaluate("network.status",{}).reason!="manifest_expired"
+
+
+def test_huge_integers_compare_normally():
+    m=manifest(); m["allow"][1]["args"]["lines"]={"maximum":10**1000}
+    a=Authority(m)
+    assert a.evaluate("journal.query",{"unit":"NetworkManager.service","lines":10**999}).allowed
+    assert not Authority(manifest()).evaluate("journal.query",{"unit":"NetworkManager.service","lines":10**1000}).allowed
