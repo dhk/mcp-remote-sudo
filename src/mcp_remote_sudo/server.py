@@ -1,8 +1,8 @@
 from __future__ import annotations
-import argparse, os, socket
+import argparse, inspect, os, socket
 from typing import Any, Callable
 from mcp.server.fastmcp import FastMCP
-from . import adapters
+from . import packs
 from .authority import Authority
 from .receipts import ReceiptWriter
 
@@ -21,35 +21,20 @@ class Runtime:
             self.receipts.write({**base,"result":"failed","error":type(exc).__name__}); raise
         self.receipts.write({**base,"result":"success"}); return result
 
-def build_server(runtime:Runtime, *, port:int=8765)->FastMCP:
-    mcp=FastMCP("mcp-remote-sudo",host="127.0.0.1",port=port); allowed=runtime.authority.allowed_tools
-    if "system.info" in allowed:
-        @mcp.tool(name="system_info")
-        def system_info()->dict: return runtime.invoke("system.info",{},adapters.system_info)
-    if "network.status" in allowed:
-        @mcp.tool(name="network_status")
-        def network_status()->dict: return runtime.invoke("network.status",{},adapters.network_status)
-    if "wifi.status" in allowed:
-        @mcp.tool(name="wifi_status")
-        def wifi_status()->dict: return runtime.invoke("wifi.status",{},adapters.wifi_status)
-    if "wifi.scan" in allowed:
-        @mcp.tool(name="wifi_scan")
-        def wifi_scan()->dict: return runtime.invoke("wifi.scan",{},adapters.wifi_scan)
-    if "wifi.driver.status" in allowed:
-        @mcp.tool(name="wifi_driver_status")
-        def wifi_driver_status(module:str)->dict: return runtime.invoke("wifi.driver.status",{"module":module},adapters.wifi_driver_status)
-    if "network.probe" in allowed:
-        @mcp.tool(name="connectivity_probe")
-        def connectivity_probe(target:str,count:int=4)->dict: return runtime.invoke("network.probe",{"target":target,"count":count},adapters.connectivity_probe)
-    if "kernel.wifi.log" in allowed:
-        @mcp.tool(name="kernel_wifi_log")
-        def kernel_wifi_log(lines:int=100)->dict: return runtime.invoke("kernel.wifi.log",{"lines":lines},adapters.kernel_wifi_log)
-    if "systemd.status" in allowed:
-        @mcp.tool(name="systemd_status")
-        def systemd_status(unit:str)->dict: return runtime.invoke("systemd.status",{"unit":unit},adapters.systemd_status)
-    if "journal.query" in allowed:
-        @mcp.tool(name="journal_query")
-        def journal_query(unit:str,lines:int=100)->dict: return runtime.invoke("journal.query",{"unit":unit,"lines":lines},adapters.journal_query)
+def _tool_function(runtime:Runtime, op:packs.Operation)->Callable[...,Any]:
+    """An MCP tool callable whose typed signature comes from the pack declaration."""
+    def call(**supplied:Any)->dict: return runtime.invoke(op.name,op.normalize(supplied),op.adapter)
+    params=[inspect.Parameter(p.name,inspect.Parameter.KEYWORD_ONLY,annotation=p.type,
+                              default=inspect.Parameter.empty if p.default is packs.REQUIRED else p.default) for p in op.params]
+    call.__name__=op.tool; call.__doc__=op.description
+    call.__signature__=inspect.Signature(params,return_annotation=dict)  # type: ignore[attr-defined]
+    return call
+
+def build_server(runtime:Runtime, *, port:int=8765, registry:packs.Registry|None=None)->FastMCP:
+    mcp=FastMCP("mcp-remote-sudo",host="127.0.0.1",port=port); registry=registry or packs.default_registry()
+    # Fail closed: every allowed operation must be provided by an installed pack.
+    for op in registry.require(runtime.authority.allowed_tools):
+        mcp.add_tool(_tool_function(runtime,op),name=op.tool,description=op.description)
     return mcp
 
 def main()->None:
