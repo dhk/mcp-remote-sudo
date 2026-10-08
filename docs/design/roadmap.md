@@ -113,10 +113,16 @@ server fails at startup.
 
 - **Built-in packs** ship inside mcp-remote-sudo and update with it (#16).
 - **External packs** are installed by the operator, never by the agent, with
-  `mcp-remote-sudo-admin pack install --requirements <lockfile>` (#38). The lockfile pins every distribution, including
-  dependencies, to an exact version and hash. Installation accepts **wheels only** (`--only-binary :all:
-  --require-hashes --no-deps` against the lockfile), so no build hooks ever run as root. It installs into the service's
-  own virtualenv only, never system-wide, refuses to replace mcp-remote-sudo's own distributions, and then reloads.
+  `mcp-remote-sudo-admin pack install --requirements <lockfile>` (#54). The lockfile pins every distribution, including
+  dependencies, to an exact version and hash, and installation accepts **wheels only**
+  (`--only-binary :all: --require-hashes --no-deps`), so no build hooks run as root.
+- **Pack code never runs as root.** Packs are installed with `pip --target` into a separate directory
+  (`/opt/mcp-remote-sudo/packs`) that is *not* a site directory, so `.pth` startup files in a wheel are never executed.
+  Only the unprivileged service adds that directory to its import path, via `PYTHONPATH` in the unit.
+- **The admin command runs isolated.** It runs from the core virtualenv in isolated mode (`python -I`, which ignores
+  `PYTHONPATH`), and it never imports external pack code. `pack list` reads distribution metadata without importing.
+  Whether a grant's operations are provided by installed packs is checked by the **service** at reload, and a failed
+  check automatically rolls the grant back. Installation also refuses to replace mcp-remote-sudo's own distributions.
 - `pack list` shows the installed packs and which of their operations the active authority currently exposes.
 - `pack remove` uninstalls a pack. It refuses while the active authority still references any of its operations.
 
