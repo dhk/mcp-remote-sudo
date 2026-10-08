@@ -93,3 +93,40 @@ def test_readme_example_manifest_is_valid():
     readme=(Path(__file__).resolve().parents[1]/"README.md").read_text()
     block=next(b for b in re.findall(r"```yaml\n(.*?)```", readme, re.S) if "kind: TaskAuthority" in b)
     Authority(yaml.safe_load(block))
+
+
+def test_booleans_never_match_numbers():
+    m=manifest(); m["allow"].append({"tool":"x.flag","args":{"count":True}})
+    m["allow"].append({"tool":"x.enum","args":{"count":{"enum":[1,2]}}})
+    m["allow"].append({"tool":"x.range","args":{"count":{"minimum":0,"maximum":5}}})
+    a=Authority(m)
+    assert a.evaluate("x.flag",{"count":True}).allowed
+    assert not a.evaluate("x.flag",{"count":1}).allowed
+    assert not a.evaluate("x.enum",{"count":True}).allowed
+    assert a.evaluate("x.enum",{"count":1}).allowed
+    assert not a.evaluate("x.range",{"count":True}).allowed
+
+
+@pytest.mark.parametrize("bound", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_bounds_fail_at_load(bound):
+    m=manifest(); m["allow"][1]["args"]["lines"]={"maximum":bound}
+    with pytest.raises(ManifestError, match="finite"): Authority(m)
+
+
+def test_non_finite_argument_values_denied():
+    a=Authority(manifest())
+    assert not a.evaluate("journal.query",{"unit":"NetworkManager.service","lines":float("nan")}).allowed
+
+
+def test_mixed_type_unknown_keys_raise_manifest_error():
+    m=manifest(); m["metadata"]["owner"]="x"; m["metadata"][1]="y"
+    with pytest.raises(ManifestError, match="unknown fields"): Authority(m)
+
+
+def test_readme_example_manifest_is_not_expired():
+    import re, yaml
+    from pathlib import Path
+    readme=(Path(__file__).resolve().parents[1]/"README.md").read_text()
+    block=next(b for b in re.findall(r"```yaml\n(.*?)```", readme, re.S) if "kind: TaskAuthority" in b)
+    a=Authority(yaml.safe_load(block))
+    assert a.evaluate("network.status",{}).reason!="manifest_expired"

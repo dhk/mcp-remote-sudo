@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,9 +35,10 @@ class Authority:
 
     def __init__(self, manifest: dict[str, Any]):
         self.manifest = manifest
+        # Validate before hashing: canonical JSON cannot sort malformed (mixed-type) keys.
+        self._validate()
         canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
         self.manifest_hash = hashlib.sha256(canonical).hexdigest()
-        self._validate()
 
     @classmethod
     def load(cls, path: str | Path) -> "Authority":
@@ -48,7 +50,7 @@ class Authority:
     def _validate(self) -> None:
         unknown = set(self.manifest) - self.TOP_LEVEL
         if unknown:
-            raise ManifestError(f"unknown top-level fields: {sorted(unknown)}")
+            raise ManifestError(f"unknown top-level fields: {sorted(unknown, key=repr)}")
         if self.manifest.get("apiVersion") != "mcp-remote-sudo/v1":
             raise ManifestError("unsupported apiVersion")
         if self.manifest.get("kind") != "TaskAuthority":
@@ -89,7 +91,7 @@ class Authority:
             raise ManifestError(f"{section} must be a mapping")
         unknown = set(value) - set(fields)
         if unknown:
-            raise ManifestError(f"{section} has unknown fields: {sorted(unknown)}")
+            raise ManifestError(f"{section} has unknown fields: {sorted(unknown, key=repr)}")
         for name, (required, types) in fields.items():
             if name not in value:
                 if required:
@@ -109,12 +111,12 @@ class Authority:
             raise ManifestError(f"{where}: empty constraint")
         unknown = set(spec) - cls.CONSTRAINT_KEYS
         if unknown:
-            raise ManifestError(f"{where}: unknown constraint keys: {sorted(unknown)}")
+            raise ManifestError(f"{where}: unknown constraint keys: {sorted(unknown, key=repr)}")
         if "enum" in spec and (not isinstance(spec["enum"], list) or not spec["enum"]):
             raise ManifestError(f"{where}: enum must be a non-empty list")
         for bound in ("minimum", "maximum"):
-            if bound in spec and (isinstance(spec[bound], bool) or not isinstance(spec[bound], (int, float))):
-                raise ManifestError(f"{where}: {bound} must be a number")
+            if bound in spec and not _is_number(spec[bound]):
+                raise ManifestError(f"{where}: {bound} must be a finite number")
         if "minimum" in spec and "maximum" in spec and spec["minimum"] > spec["maximum"]:
             raise ManifestError(f"{where}: minimum exceeds maximum")
 
@@ -162,16 +164,28 @@ class Authority:
                 return False
             value = args[name]
             if not isinstance(spec, dict):
-                if value != spec:
+                if not _same(value, spec):
                     return False
                 continue
             unknown = set(spec) - {"enum", "minimum", "maximum"}
             if unknown:
                 return False
-            if "enum" in spec and value not in spec["enum"]:
+            if "enum" in spec and not any(_same(value, allowed) for allowed in spec["enum"]):
                 return False
-            if "minimum" in spec and (not isinstance(value, (int, float)) or value < spec["minimum"]):
+            if "minimum" in spec and (not _is_number(value) or value < spec["minimum"]):
                 return False
-            if "maximum" in spec and (not isinstance(value, (int, float)) or value > spec["maximum"]):
+            if "maximum" in spec and (not _is_number(value) or value > spec["maximum"]):
                 return False
         return True
+
+
+def _is_number(value: Any) -> bool:
+    """A finite int/float that is not a bool (bool is an int subclass, and NaN defeats comparisons)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _same(value: Any, expected: Any) -> bool:
+    """Equality that never treats booleans as numbers (Python considers True == 1)."""
+    if isinstance(value, bool) or isinstance(expected, bool):
+        return isinstance(value, bool) and isinstance(expected, bool) and value is expected
+    return value == expected
