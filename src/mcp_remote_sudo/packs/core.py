@@ -16,6 +16,7 @@ def authority_propose(runtime, purpose: str, operations: list[str],
     pid, path, digest = proposals.store(runtime.state_dir, manifest)
     from ..authority import Authority
     return {"id": pid, "sha256": digest, "path": str(path), "warnings": warnings,
+            "expires_at": manifest["lifetime"]["notAfter"],
             "diff": proposals.diff_text(runtime.authority, Authority(manifest)),
             "yaml": path.read_text(),
             "grant_command": f"sudo mcp-remote-sudo-admin grant --proposal {pid} --sha256 {digest}"}

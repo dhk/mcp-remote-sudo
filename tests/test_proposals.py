@@ -113,7 +113,9 @@ def test_propose_then_grant_by_digest_end_to_end(tmp_path, monkeypatch):
         adm.grant_proposal(out["id"], "0" * 64, yes=True, timeout=2)
     adm.grant_proposal(out["id"], out["sha256"], yes=True, timeout=2)
     assert {"wifi_status", "kernel_wifi_log"} <= {t.name for t in asyncio.run(server.list_tools())}
-    assert "authority_propose" not in {t.name for t in asyncio.run(server.list_tools())}  # proposal didn't include it
+    assert "authority_propose" in {t.name for t in asyncio.run(server.list_tools())}   # kept: the agent can still ask
+    assert "review before granting:" in adm.out.getvalue()
+    assert "expires_at" in out
 
 
 def test_admin_grant_cli_requires_file_xor_proposal(capsys):
@@ -121,3 +123,59 @@ def test_admin_grant_cli_requires_file_xor_proposal(capsys):
     assert admin_mod.main(["grant", "x.yaml", "--proposal", "prop-20261003T120000Z-abcdef", "--sha256", "a" * 64]) == 1
     assert admin_mod.main(["grant", "--proposal", "prop-20261003T120000Z-abcdef"]) == 1
     assert "either FILE or --proposal" in capsys.readouterr().err
+
+
+
+def test_widening_a_template_bound_is_flagged():
+    m, warnings = render(registry=REG, active=active(), purpose="p", ttl_minutes=60, operations=["journal.query", "network.probe"],
+                         constraints={"journal.query": {"lines": {"minimum": 1}},
+                                      "network.probe": {"count": {"minimum": 1, "maximum": 100000}, "target": {"enum": ["1.1.1.1"]}}})
+    assert any("journal.query.lines" in w and "widens the pack template" in w for w in warnings)
+    assert any("journal.query.lines has a one-sided bound" in w for w in warnings)
+    assert any("network.probe.count" in w and "widens the pack template" in w for w in warnings)
+
+
+def test_narrowing_a_template_bound_is_not_flagged():
+    _, warnings = render(registry=REG, active=active(), purpose="p", ttl_minutes=60, operations=["network.probe"],
+                         constraints={"network.probe": {"count": {"minimum": 1, "maximum": 2}, "target": {"enum": ["1.1.1.1"]}}})
+    assert not any("widens" in w for w in warnings)
+
+
+def test_grant_recomputes_warnings_from_the_verified_bytes(tmp_path, monkeypatch):
+    m, _ = render(registry=REG, active=active(), purpose="p", ttl_minutes=60, operations=["journal.query"],
+                  constraints={"journal.query": {"lines": {"minimum": 1, "maximum": 10000}}})
+    pid, path, digest = store(tmp_path, m)
+    mpath = tmp_path / "authority.yaml"; mpath.write_text(yaml.safe_dump(active().manifest))
+    adm = Admin(str(mpath), str(tmp_path), str(tmp_path / "r.jsonl"), "svc", out=io.StringIO())
+    adm.session_mode_override = "fixed"
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+    with pytest.raises(AdminError, match="aborted"):
+        adm.grant_proposal(pid, digest)
+    assert "! journal.query.lines" in adm.out.getvalue() and "widens the pack template" in adm.out.getvalue()
+
+
+def test_root_refuses_symlinked_special_or_oversized_proposals(tmp_path):
+    import os
+    m, _ = render(registry=REG, active=active(), purpose="p", operations=["system.info"], constraints=None, ttl_minutes=60)
+    pid, path, digest = store(tmp_path, m)
+    secret = tmp_path / "secret"; secret.write_text("root only")
+    path.unlink(); path.symlink_to(secret)
+    with pytest.raises(ProposalError, match="cannot open"):
+        read_for_grant(tmp_path, pid, digest)
+    path.unlink(); os.mkfifo(path)
+    with pytest.raises(ProposalError, match="not a regular file"):
+        read_for_grant(tmp_path, pid, digest)
+    path.unlink(); path.write_bytes(b"x" * (proposals.MAX_PROPOSAL_BYTES + 1))
+    with pytest.raises(ProposalError, match="too large"):
+        read_for_grant(tmp_path, pid, digest)
+    real = proposals.proposals_dir(tmp_path); moved = tmp_path / "elsewhere"; real.rename(moved); real.symlink_to(moved)
+    with pytest.raises(ProposalError, match="not a plain directory"):
+        read_for_grant(tmp_path, pid, digest)
+
+
+def test_digest_mismatch_does_not_echo_the_actual_digest(tmp_path):
+    m, _ = render(registry=REG, active=active(), purpose="p", operations=["system.info"], constraints=None, ttl_minutes=60)
+    pid, path, digest = store(tmp_path, m)
+    with pytest.raises(ProposalError) as exc:
+        read_for_grant(tmp_path, pid, "0" * 64)
+    assert digest not in str(exc.value)

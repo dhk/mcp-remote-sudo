@@ -153,8 +153,9 @@ a manifest from their templates. It stores the result as a proposal and returns 
 authority, and the proposal's SHA-256 digest. **It grants nothing**: `expansion: prohibited` still holds.
 
 The proposal store is writable by the unprivileged service, so the operator grants **by content, not by ID**:
-`admin grant --proposal <id> --sha256 <digest>`. The admin command first copies the proposal into root-owned staging,
-then checks the digest against the one the operator reviewed, re-validates, and only then installs it. A proposal swapped
+`admin grant --proposal <id> --sha256 <digest>`. The admin command reads the proposal exactly once, refusing symlinks and special
+files, checks the digest of those bytes against the one the operator reviewed, parses and re-validates those same
+bytes, recomputes the review warnings, and only then installs it. A proposal swapped
 after review fails the digest check.
 
 ### Controlled mutation (#41–#43)

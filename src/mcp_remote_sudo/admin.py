@@ -25,7 +25,7 @@ import yaml
 
 from . import pack_install, packs
 from .authority import Authority, ManifestError
-from .proposals import ProposalError, diff_text, read_for_grant
+from .proposals import ProposalError, diff_text, read_for_grant, review_warnings
 from .receipts import verify_chain
 
 DEFAULT_MANIFEST = "/etc/mcp-remote-sudo/authority.yaml"
@@ -120,6 +120,12 @@ class Admin:
             new = Authority(read_for_grant(state_dir, proposal_id, sha256))
         except (ProposalError, ManifestError) as exc:
             raise AdminError(str(exc)) from exc
+        # Recomputed from the verified bytes: never rely on warnings relayed by the agent.
+        warnings = review_warnings(new.manifest, self.registry)
+        self.say("review before granting:" if warnings else "review before granting: no warnings")
+        for w in warnings:
+            self.say(f"  ! {w}")
+        self.say(f"  expires: {new.manifest['lifetime']['notAfter']} (the clock started when the proposal was made)")
         return self._grant(new, yes=yes, timeout=timeout)
 
     def grant(self, path: str, *, yes: bool = False, timeout: float = 45.0) -> Authority:

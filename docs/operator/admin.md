@@ -115,6 +115,13 @@ The service:
 sudo $A grant --proposal prop-20261003T120000Z-1a2b3c --sha256 <digest>
 ```
 
-The proposal store is writable by the service, so `grant` reads the file once, checks the digest of exactly those
-bytes against the one you reviewed, and parses those same bytes. A proposal changed after review is refused. Proposal
-IDs are validated, which rules out path traversal. Only the 100 newest proposals are kept.
+Before asking for confirmation, `grant --proposal` **recomputes the review warnings from the verified bytes**, so it
+doesn't rely on whatever the agent relayed. The warnings cover unconstrained arguments, one-sided numeric bounds,
+constraints that widen a pack template, and mutating operations. It also shows the expiry. The TTL clock starts when
+the proposal is made, and the propose result reports it as `expires_at`. A proposal keeps `authority.propose` if the
+active grant has it, so the agent can still ask for the next change.
+
+The proposal store is writable by the service, so `grant` reads the file exactly once. It refuses a symlinked file or
+directory, anything other than a regular file, and files over 256 KiB. It checks the digest of exactly those bytes
+against the one you reviewed, then parses those same bytes. A proposal changed after review is refused. Only the 100
+newest proposals are kept.

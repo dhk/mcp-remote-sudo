@@ -259,6 +259,7 @@ lifetime:
   renewable: false
   expansion: prohibited
 allow:
+  - tool: authority.propose
   - tool: system.info
   - tool: network.status
   - tool: wifi.status

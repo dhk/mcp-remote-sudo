@@ -14,6 +14,7 @@ import json
 import os
 import re
 import secrets
+import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -60,6 +61,45 @@ def template_constraints(registry: Registry, operation: str) -> dict[str, Any]:
     return {}
 
 
+def _widens(template: Any, caller: Any) -> bool:
+    """Whether a caller's constraint admits anything the template's constraint would reject."""
+    if not isinstance(template, dict):
+        return caller != template
+    if not isinstance(caller, dict):
+        return "enum" in template and caller not in template["enum"]
+    if "enum" in template and ("enum" not in caller or not set(map(repr, caller["enum"])) <= set(map(repr, template["enum"]))):
+        return True
+    if "minimum" in template and ("minimum" not in caller or caller["minimum"] < template["minimum"]):
+        return True
+    if "maximum" in template and ("maximum" not in caller or caller["maximum"] > template["maximum"]):
+        return True
+    return False
+
+
+def review_warnings(manifest: dict[str, Any], registry: Registry) -> list[str]:
+    """What an operator should weigh before granting: computed from the manifest itself (so the admin can recompute it
+    from the verified bytes instead of trusting what the agent relayed)."""
+    warnings = []
+    for rule in manifest.get("allow", []):
+        name, args = rule.get("tool"), rule.get("args") or {}
+        op = registry.operations.get(name)
+        if op is None:
+            warnings.append(f"{name} is not a built-in operation (the service checks installed packs at reload)"); continue
+        if op.mutating:
+            warnings.append(f"{name} is a mutating operation (confirmation: {rule.get('confirmation', 'operator')})")
+        for p in op.params:
+            spec = args.get(p.name)
+            if spec is None:
+                warnings.append(f"{name}.{p.name} is unconstrained")
+            elif isinstance(spec, dict) and p.type in (int, float) and "enum" not in spec and ("minimum" not in spec or "maximum" not in spec):
+                warnings.append(f"{name}.{p.name} has a one-sided bound {spec}")
+            if spec is not None:
+                template = template_constraints(registry, name).get(p.name)
+                if template is not None and _widens(template, spec):
+                    warnings.append(f"{name}.{p.name} = {spec} widens the pack template ({template})")
+    return warnings
+
+
 def render(*, registry: Registry, active: Authority, purpose: str, operations: list[str],
            constraints: dict[str, dict[str, Any]] | None, ttl_minutes: int,
            now: datetime | None = None) -> tuple[dict[str, Any], list[str]]:
@@ -79,7 +119,10 @@ def render(*, registry: Registry, active: Authority, purpose: str, operations: l
     if stray:
         raise ProposalError(f"constraints given for operations not proposed: {stray}")
     now = now or datetime.now(timezone.utc)
-    allow, warnings = [], []
+    allow = []
+    if "authority.propose" in active.allowed_tools and "authority.propose" not in operations \
+            and "authority.propose" in registry.operations:
+        operations = [*operations, "authority.propose"]   # keep the agent able to ask for the next change
     for name in sorted(set(operations)):
         op = registry.operations[name]
         args = template_constraints(registry, name)
@@ -90,11 +133,6 @@ def render(*, registry: Registry, active: Authority, purpose: str, operations: l
         if bad:
             raise ProposalError(f"{name} has no arguments {bad}")
         args.update(extra)
-        for p in op.params:
-            if p.name not in args:
-                warnings.append(f"{name}.{p.name} is unconstrained")
-        if op.mutating:
-            warnings.append(f"{name} is a mutating operation")
         allow.append({"tool": name, **({"args": args} if args else {})})
     binding = dict(active.manifest["binding"])
     manifest = {
@@ -108,7 +146,7 @@ def render(*, registry: Registry, active: Authority, purpose: str, operations: l
         "receipts": {"required": True},
     }
     Authority(manifest)  # validates (fails closed on any malformed constraint)
-    return manifest, warnings
+    return manifest, review_warnings(manifest, registry)
 
 
 def store(state_dir: str | Path, manifest: dict[str, Any], *, now: datetime | None = None) -> tuple[str, Path, str]:
@@ -124,20 +162,35 @@ def store(state_dir: str | Path, manifest: dict[str, Any], *, now: datetime | No
     return pid, path, hashlib.sha256(data).hexdigest()
 
 
+MAX_PROPOSAL_BYTES = 256 * 1024
+
+
 def read_for_grant(state_dir: str | Path, proposal_id: str, expected_sha256: str) -> dict[str, Any]:
-    """Read the proposal once, verify the digest of exactly those bytes, and parse those same bytes."""
+    """Read the proposal once, verify the digest of exactly those bytes, and parse those same bytes.
+    The proposals directory is writable by the unprivileged service and this runs as root: refuse symlinks (directory
+    or file), anything but a regular file, and oversized files."""
     if not PROPOSAL_ID.fullmatch(proposal_id or ""):
         raise ProposalError("invalid proposal id")
     if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256 or ""):
         raise ProposalError("--sha256 must be a 64-character lowercase hex digest")
-    path = proposals_dir(state_dir) / f"{proposal_id}.yaml"
+    directory = proposals_dir(state_dir)
+    if directory.is_symlink() or not directory.is_dir():
+        raise ProposalError(f"{directory} is not a plain directory")
     try:
-        data = path.read_bytes()
+        fd = os.open(directory / f"{proposal_id}.yaml", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as exc:
-        raise ProposalError(f"cannot read proposal {proposal_id}: {exc}") from exc
-    actual = hashlib.sha256(data).hexdigest()
-    if actual != expected_sha256:
-        raise ProposalError(f"proposal {proposal_id} changed since review (sha256 {actual} != {expected_sha256})")
+        raise ProposalError(f"cannot open proposal {proposal_id}: {exc.strerror}") from exc
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ProposalError(f"proposal {proposal_id} is not a regular file")
+        if st.st_size > MAX_PROPOSAL_BYTES:
+            raise ProposalError(f"proposal {proposal_id} is too large")
+        data = os.read(fd, MAX_PROPOSAL_BYTES + 1)
+    finally:
+        os.close(fd)
+    if len(data) > MAX_PROPOSAL_BYTES or hashlib.sha256(data).hexdigest() != expected_sha256:
+        raise ProposalError(f"proposal {proposal_id} changed since review (digest mismatch)")
     manifest = yaml.safe_load(data)
     if not isinstance(manifest, dict):
         raise ProposalError("proposal is not a mapping")
