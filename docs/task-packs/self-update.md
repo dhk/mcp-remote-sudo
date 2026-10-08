@@ -8,7 +8,7 @@ This is a Task Pack, not a generic package-management or shell capability.
 
 ## Trust boundary
 
-The unprivileged mcp-remote-sudo service requests an update. A separately installed, root-owned helper performs the privileged transition. The helper has one purpose: replace mcp-remote-sudo with an approved version from its canonical source and recover the previous healthy version if activation fails.
+The unprivileged mcp-remote-sudo service requests an update. A separately installed, root-owned helper performs the privileged transition. That helper is the shared privileged helper (#41), which also serves mutation packs through its fixed operation table. The self-update *operation* within it has one purpose: replace mcp-remote-sudo with an approved version from its canonical source and recover the previous healthy version if activation fails. No other helper operation can modify the installation.
 
 ```text
 MCP client
@@ -70,7 +70,7 @@ The exact schema should make source selection non-arbitrary. A default operation
 4. Record the currently active known-good version.
 5. Atomically activate the staged version.
 6. Restart only mcp-remote-sudo.
-7. Apply the same sustained-health verification used by installation.
+7. Repeat the complete verification protocol from the installation guide's Upgrades section: sustained health, plus behavioral checks that an allowed call succeeds, an out-of-authority call is denied, and both produce receipts. The update must not broaden the authority manifest.
 8. On failure, restore the known-good version and restart.
 9. Emit an append-only receipt describing update or rollback.
 
