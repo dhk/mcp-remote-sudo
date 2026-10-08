@@ -12,7 +12,7 @@ PACK = TaskPack(
         Operation("wifi.status", "wifi_status", adapters.wifi_status,
                   description="NetworkManager device status."),
         Operation("wifi.scan", "wifi_scan", adapters.wifi_scan,
-                  (Param("rescan", bool, False),),
+                  (Param("rescan", bool, False, gated=True),),
                   description="Visible Wi-Fi networks; rescan=true forces a fresh scan."),
         Operation("wifi.link", "wifi_link", adapters.wifi_link,
                   description="Associated access point: BSSID, channel, frequency, rate, signal."),
