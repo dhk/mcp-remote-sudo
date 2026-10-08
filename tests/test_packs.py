@@ -8,7 +8,7 @@ from mcp_remote_sudo.authority import Authority
 from mcp_remote_sudo.packs import Operation, PackError, Param, Registry, TaskPack
 from mcp_remote_sudo.server import build_server
 
-BUILTIN = {"system.info","network.status","systemd.status","journal.query","journal.boots",
+BUILTIN = {"system.info","network.status","systemd.status","journal.query","journal.boots","receipts.tail",
            "wifi.status","wifi.scan","wifi.link","wifi.driver.status","kernel.wifi.log","network.probe"}
 
 

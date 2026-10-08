@@ -39,6 +39,7 @@ class Operation:
     description: str = ""
     mutating: bool = False
     privileges: tuple[str, ...] = ()   # host privileges the adapter needs, e.g. "journal-read"
+    needs_runtime: bool = False        # adapter receives the server Runtime as its first argument
 
     def gated_in_use(self, args: dict[str, Any]) -> list[str]:
         return [p.name for p in self.params if p.gated and p.name in args and args[p.name] != p.default]

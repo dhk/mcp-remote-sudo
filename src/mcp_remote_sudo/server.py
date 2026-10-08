@@ -1,5 +1,5 @@
 from __future__ import annotations
-import argparse, inspect, os, socket
+import argparse, functools, inspect, os, socket
 from typing import Any, Callable, Sequence
 from mcp.server.fastmcp import FastMCP
 from . import packs
@@ -23,9 +23,10 @@ class Runtime:
 
 def _tool_function(runtime:Runtime, op:packs.Operation)->Callable[...,Any]:
     """An MCP tool callable whose typed signature comes from the pack declaration."""
+    adapter=functools.partial(op.adapter,runtime) if op.needs_runtime else op.adapter
     def call(**supplied:Any)->dict:
         args=op.normalize(supplied); gated=op.gated_in_use(args)
-        return runtime.invoke(op.name,args,op.adapter,**({"gated":gated} if gated else {}))
+        return runtime.invoke(op.name,args,adapter,**({"gated":gated} if gated else {}))
     params=[inspect.Parameter(p.name,inspect.Parameter.KEYWORD_ONLY,annotation=p.type,
                               default=inspect.Parameter.empty if p.default is packs.REQUIRED else p.default) for p in op.params]
     call.__name__=op.tool; call.__doc__=op.description
